@@ -18,48 +18,117 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
+	"reflect"
 	"sync"
+	"time"
+
 	"github.com/michaelfig/k8s-copier/logf"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
+
 	log "k8s.io/klog"
+	ctrl "sigs.k8s.io/controller-runtime"
+)
+
+var (
+	KeyFunc = cache.DeletionHandlingMetaNamespaceKeyFunc
 )
 
 type Controller struct {
-	Context				context.Context
+	Context context.Context
 
-	dynamicListers      map[schema.GroupVersionResource]cache.GenericLister
-	queue               workqueue.RateLimitingInterface
-	syncedFuncs			[]cache.InformerSynced
-	workerWg			sync.WaitGroup
+	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
+	queue          workqueue.RateLimitingInterface
+	syncedFuncs    []cache.InformerSynced
+	syncHandler    func(context.Context, string) error
+	workerWg       sync.WaitGroup
+}
+
+type QueuingEventHandler struct {
+	Queue workqueue.RateLimitingInterface
+}
+
+func (q *QueuingEventHandler) Enqueue(obj interface{}) {
+	key, err := KeyFunc(obj)
+	if err != nil {
+		runtime.HandleError(err)
+		return
+	}
+	q.Queue.Add(key)
+}
+
+func (q *QueuingEventHandler) OnAdd(obj interface{}) {
+	q.Enqueue(obj)
+}
+
+func (q *QueuingEventHandler) OnUpdate(old, new interface{}) {
+	if reflect.DeepEqual(old, new) {
+		return
+	}
+	q.Enqueue(new)
+}
+
+func (q *QueuingEventHandler) OnDelete(obj interface{}) {
+	tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+	if ok {
+		obj = tombstone.Obj
+	}
+	q.Enqueue(obj)
 }
 
 // New returns a new controller. It sets up the informer handler
 // functions for all the types it watches.
-func New(ctx *context.Context, namespaces []string, targets []schema.GroupVersionResource) *Controller {
-	ctrl := &Controller{Context: ctx}
+func New(ctx *context.Context, config *rest.Config, namespaces []string, targets []schema.GroupVersionResource) *Controller {
+	ctrl := &Controller{Context: *ctx}
 	ctrl.syncHandler = ctrl.processNextWorkItem
-	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter()
+	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 
-	dynclient := dynamic.NewForConfigOrDie()
-	factory = dynamicinformer.NewDynamicSharedInformerFactory(dynclient, 0)
+	dynclient := dynamic.NewForConfigOrDie(config)
+	var factories []dynamicinformer.DynamicSharedInformerFactory
+	if len(namespaces) == 0 {
+		// Create a single all-namespaces factory.
+		factories = []dynamicinformer.DynamicSharedInformerFactory{
+			dynamicinformer.NewDynamicSharedInformerFactory(dynclient, 0),
+		}
+	} else {
+		// Create a factory per namespace.
+		factories = make([]dynamicinformer.DynamicSharedInformerFactory, len(namespaces))
+		for i, namespace := range namespaces {
+			factories[i] = dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+				dynclient,
+				0,
+				namespace,
+				nil,
+			)
+		}
+	}
 
-	
-	for _, gvr = range(targets) {
-		target := factory.ForResource(gvr)
-		ctrl.dynamicListers[gvr] = target.Lister()
-		target.Informer().AddEventHandler()
-		ctrl.syncedFuncs = append(ctrl.syncedFuncs, target.Informer().HasSynced)
+	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister, len(targets))
+	for _, gvr := range targets {
+		ctrl.dynamicListers[gvr] = make([]cache.GenericLister, len(factories))
+		for _, factory := range factories {
+			target := factory.ForResource(gvr)
+			ctrl.dynamicListers[gvr] = append(ctrl.dynamicListers[gvr], target.Lister())
+			target.Informer().AddEventHandler(&QueuingEventHandler{Queue: ctrl.queue})
+			ctrl.syncedFuncs = append(ctrl.syncedFuncs, target.Informer().HasSynced)
+		}
 	}
 	return ctrl
 }
 
 func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
-	ctx, cancel := context.WithCancel(c.ctx)
+	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
 
 	log.Info("starting control loop")
@@ -118,33 +187,62 @@ func (c *Controller) worker(ctx context.Context) {
 }
 
 func (c *Controller) processNextWorkItem(ctx context.Context, key string) error {
-	log := logf.FromContext(ctx)
+	// log := logf.FromContext(ctx)
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		log.Error(err, "invalid resource key")
 		return nil
 	}
 
-	crt, err := c.certificateLister.Certificates(namespace).Get(name)
-	if err != nil {
-		if k8sErrors.IsNotFound(err) {
-			c.scheduledWorkQueue.Forget(key)
-			log.Error(err, "certificate in work queue no longer exists")
-			return nil
-		}
+	log.Info("Would process", namespace, name)
+	// ctx = logf.NewContext(ctx, logf.WithResource(log, crt))
+	// return c.Sync(ctx, crt)
+	return nil
+}
 
-		return err
+func (c *Controller) Start(stopCh <-chan struct{}) error {
+	return c.Run(3, stopCh)
+}
+
+func RegisterAll(mgr ctrl.Manager) error {
+	gvrs := []schema.GroupVersionResource{
+		{Group: "types.federation.k8s.io", Version: "v1alpha1", Resource: "federatedsecrets"},
 	}
+	namespaces := []string{}
+	ctx := context.TODO()
+	c := New(&ctx, mgr.GetConfig(), namespaces, gvrs)
 
-	ctx = logf.NewContext(ctx, logf.WithResource(log, crt))
-	return c.Sync(ctx, crt)
+	mgr.Add(c)
+	return nil
+}
+
+// InitLogs initializes logs the way we want for kubernetes.
+func InitLogs(fs *flag.FlagSet) {
+	if fs == nil {
+		fs = flag.CommandLine
+	}
+	klog.InitFlags(fs)
+	fs.Set("logtostderr", "true")
+
+	log.SetOutput(os.Stdout)
 }
 
 func main() {
-	gvrs := []schema.GroupVersionResource{
-		{Group: "types.federation.k8s.io", Version: "v1alpha1", Resource: "federatedsecrets"}
+	InitLogs(nil)
+
+	stopCh := ctrl.SetupSignalHandler()
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
+
+	if err != nil {
+		klog.Fatalf("error creating manager: %v", err)
 	}
-	namespaces := []string{}
-	ctrl := New(context.TODO(), namespaces, gvrs)
-	ctrl.Run(3);
+
+	// TODO(directxman12): enabled controllers for separate injectors?
+	if err := RegisterAll(mgr); err != nil {
+		klog.Fatalf("error registering controllers: %v", err)
+	}
+
+	if err := mgr.Start(stopCh); err != nil {
+		klog.Fatalf("error running manager: %v", err)
+	}
 }

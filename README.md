@@ -2,7 +2,28 @@
 
 *NOTE: This project is under active development.  Not yet working, much less ready for production.*
 
-k8s-copier watches and updates specially-annotated Kubernetes resources with values from other resources.  The main use case is to update [Federation v2](https://github.com/kubernetes-sigs/federation-v2) Federated* resources with values from the host cluster.
+k8s-copier watches and updates specially-annotated Kubernetes resources with values from other resources.
+
+## Annotations
+
+Annotations on a target resource (one whose resource plural is passed as a `--target=`*RESOURCEPLURAL* to k8s-copier) can be one of the following:
+
+| Annotation | Value | Description |
+| --- | --- | --- |
+| k8s-copier.fig.org/replace-*DST-PATH* | *PLURAL*:*RESOURCE*:*SRC-PATH* | Replace *DST-PATH* on the current resource with the contents of *SRC-PATH* from *RESOURCE* (of kind *PLURAL*) |
+| k8s-copier.fig.org/replace-*DST-PATH* | json:*JSON-STRING* | Replace *DST-PATH* on the current resource with the stringified JSON data *JSON-STRING* |
+
+Strategic merge (#1) and JSON Merge Patch (#2) annotations are planned, but not yet implemented.  Please add a thumbs-up or note explaining your use case to these issues if the feature would be useful to you.
+
+The *DST-PATH* and *SRC-PATH* are JSON paths, such as `spec.template.data` or `spec`.
+
+Each *RESOURCE* to copy from can be either a *NAME*, or *NAMESPACE*`/`*NAME*, such as `my-secret`, or `ns/my-secret`.
+
+The *PLURAL* is the plural form of the *RESOURCE* kind to copy from, such as `secrets` or `deployments`.
+
+# Kubernetes Federation V2
+
+The main use case for k8s-copier is to update [Federation v2](https://github.com/kubernetes-sigs/federation-v2) `Federated*` resources with values from the host cluster.
 
 **IMPORTANT: To run any of the following examples, you will first need to label your master cluster (the one which is the synchronization source for the other clusters)!**  This prevents Federation and k8s-copier from flapping when trying to update the same resource.
 
@@ -175,6 +196,6 @@ Whenever the HelmRelease changes (such as when Flux detects image changes, or Gi
 
 # Acknowledgments
 
-Thanks to James Munnelly at [Jetstack](https://www.jetstack.io/) for starting me in the direction of creating an orthogonal service, rather than patching Cert-Manager and Flux.
+Thanks to James Munnelly at [Jetstack](https://www.jetstack.io/) for starting me in the direction of creating an orthogonal controller, rather than patching [cert-manager](https://github.com/jetstack/cert-manager) and [Weave Flux](https://github.com/weaveworks/flux).
 
-Michael FIG <michael@fig.org>, 2019-05-02
+Michael FIG <michael+k8s-copier@fig.org>, 2019-05-02

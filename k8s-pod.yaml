@@ -1,0 +1,25 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-copier
+imagePullSecrets:
+  - name: cluster-registry
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-copier
+spec:
+  containers:
+  - name: copier
+    image: michaelfig/k8s-copier
+    args:
+    - --namespace=$(POD_NAMESPACE)
+    - --target=types.federation.k8s.io/v1alpha1/federatedsecrets
+    env:
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+  serviceAccount: k8s-copier

@@ -45,11 +45,13 @@ metadata:
   name: cloud-certificate
   namespace: cloud
   annotations:
+    # The k8s-copier specification.
     k8s-copier.fig.org/replace-spec.template.data: "secrets:cloud-certificate:data"
 spec:
   placement:
     clusterSelector:
       matchExpressions:
+      # Don't update the master cluster, as cert-manager does that.
       - key: cluster-master
         operator: DoesNotExist
 ```
@@ -97,11 +99,13 @@ metadata:
   namespace: cloud
   annotations:
     flux.weave.works/ignore: "true" # Needed to prevent flapping.
+    # The k8s-copier specification.
     k8s-copier.fig.org/replace-spec.template.spec: "deployments:cloud-deployment:spec"
 spec:
   placement:
     clusterSelector:
       matchExpressions:
+      # Don't update the master cluster, as Flux does that.
       - key: cluster-master
         operator: DoesNotExist
 ```
@@ -113,8 +117,7 @@ Whenever the Deployment changes (such as when Flux detects image changes, or Git
 
 ### HelmRelease
 
-
-If you want to update a FederatedHelmRelease with values from a HelmRelease that is managed by Flux, first enable federation for HelmReleases:
+If you want to update a FederatedHelmRelease with values from a HelmRelease that is managed by Flux (which in turn generates an actual `helm` installation via the `flux-helm-operator`), first enable federation for HelmReleases:
 
 ```
 $ kubefed2 enable helmrelease
@@ -154,17 +157,24 @@ metadata:
   namespace: cloud
   annotations:
     flux.weave.works/ignore: "true" # Needed to prevent flapping.
+    # The k8s-copier specification.
     k8s-copier.fig.org/replace-spec.template.spec: "helmreleases:cloud-release:spec"
 spec:
   placement:
     clusterSelector:
       matchExpressions:
+      # Don't update the master cluster, as Flux does that.
       - key: cluster-master
         operator: DoesNotExist
 ```
 
+After these resources are added, Flux should manage GitOps changes and update the HelmRelease named `cloud-release`.  Then, k8s-copier will detect the HelmRelease changes, and add its
+`spec` values to the FederatedHelmRelease's `spec.template.spec` path.  Finally, Federation will propagate the FederatedHelmRelease to HelmReleases in the other clusters.
+
+Whenever the HelmRelease changes (such as when Flux detects image changes, or GitOps changes to the HelmRelease), the FederatedHelmRelease will also be updated, and Federation will propagate the HelmRelease to the other clusters.
+
 # Acknowledgments
 
-Thanks to James Munnelly at Jetstack for starting me in the direction of creating an orthogonal service, rather than patching Cert-Manager and Flux.
+Thanks to James Munnelly at [Jetstack](https://www.jetstack.io/) for starting me in the direction of creating an orthogonal service, rather than patching Cert-Manager and Flux.
 
 Michael FIG <michael@fig.org>, 2019-05-02

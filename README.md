@@ -13,7 +13,7 @@ Annotations on a target resource (one whose resource plural is passed as a `--ta
 | k8s-copier.fig.org/replace-*DST-PATH* | *PLURAL*:*RESOURCE*:*SRC-PATH* | Replace *DST-PATH* on the current resource with the contents of *SRC-PATH* from *RESOURCE* (of kind *PLURAL*) |
 | k8s-copier.fig.org/replace-*DST-PATH* | json:*JSON-STRING* | Replace *DST-PATH* on the current resource with the stringified JSON data *JSON-STRING* |
 
-Strategic merge ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/1) and JSON Merge Patch ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/2)) annotations are planned, but not yet implemented.  Please add a thumbs-up or note explaining your use case to these issues if the feature would be useful to you.
+Strategic merge ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/1)) and JSON Merge Patch ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/2)) annotations are planned, but not yet implemented.  Please add a thumbs-up or note explaining your use case to the relevant issue if the feature would be useful to you.
 
 The *DST-PATH* and *SRC-PATH* are JSON paths, such as `spec.template.data` or `spec`.
 

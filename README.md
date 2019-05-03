@@ -6,7 +6,7 @@ k8s-copier watches and updates specially-annotated Kubernetes resources with val
 
 ## Annotations
 
-Annotations on a target resource (one whose resource plural is passed as a `--target=`*RESOURCEPLURAL* to k8s-copier) can be one of the following:
+Annotations on a target resource (one whose resource plural is passed as a `--target=`*RESOURCEPLURAL* to k8s-copier, with optional appended dot-separated *VERSION* and *GROUP*) can be one of the following:
 
 | Annotation | Value | Description |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ The *DST-PATH* and *SRC-PATH* are JSON paths, such as `spec.template.data` or `s
 
 Each *RESOURCE* to copy from can be either a *NAME*, or *NAMESPACE*`/`*NAME*, such as `my-secret`, or `ns/my-secret`.
 
-The *PLURAL* is the plural form of the *RESOURCE* kind to copy from, such as `secrets` or `deployments`.
+The *PLURAL* is the plural form of the *RESOURCE* kind to copy from, with dot-separated *VERSION* and *GROUP* if not a `v1` apiVersion, such as `secrets` or `deployments.v1beta1.extensions`.
 
 # Kubernetes Federation V2
 
@@ -35,7 +35,7 @@ This is assuming your master cluster, which has been added with `kubefed2 join` 
 
 ## Cert-Manager integration
 
-If you use [cert-manager](https://github.com/jetstack/cert-manager) and you want to update a FederatedSecret with values from a Secret that is created by cert-manager, first make sure that k8s-copier has the `--target=federatedsecrets` flag set and the `cluster-master=true` label has been applied as above.
+If you use [cert-manager](https://github.com/jetstack/cert-manager) and you want to update a FederatedSecret with values from a Secret that is created by cert-manager, first make sure that k8s-copier has the `--target=federatedsecrets.v1alpha1.types.federation.k8s.io` flag set and the `cluster-master=true` label has been applied as above.
 
 Then, you can do something like this:
 
@@ -88,7 +88,7 @@ If you use [Weave Flux](https://github.com/weaveworks/flux) you can use the foll
 
 ### Deployment
 
-If you want to update a FederatedDeployment with values from a Deployment that is managed by Flux, first make sure that k8s-copier has the `--target=federateddeployments` flag set and the `cluster-master=true` label has been applied as above.
+If you want to update a FederatedDeployment with values from a Deployment that is managed by Flux, first make sure that k8s-copier has the `--target=federateddeployments.v1alpha1.types.federation.k8s.io` flag set and the `cluster-master=true` label has been applied as above.
 
 Then you can add a Deployment to your Flux GitOps repository:
 
@@ -121,7 +121,7 @@ metadata:
   annotations:
     flux.weave.works/ignore: "true" # Needed to prevent flapping.
     # The k8s-copier specification.
-    k8s-copier.fig.org/replace-spec.template.spec: "deployments:cloud-deployment:spec"
+    k8s-copier.fig.org/replace-spec.template.spec: "deployments.v1beta1.extensions:cloud-deployment:spec"
 spec:
   placement:
     clusterSelector:
@@ -144,7 +144,7 @@ If you want to update a FederatedHelmRelease with values from a HelmRelease that
 $ kubefed2 enable helmrelease
 ```
 
-Next, make sure that k8s-copier has the `--target=federatedhelmreleases` flag set and the `cluster-master=true` label has been applied as above.
+Next, make sure that k8s-copier has the `--target=federatedhelmreleases.v1alpha1.types.federation.k8s.io` flag set and the `cluster-master=true` label has been applied as above.
 
 Then you can add a HelmRelease to your Flux GitOps repository:
 
@@ -179,7 +179,7 @@ metadata:
   annotations:
     flux.weave.works/ignore: "true" # Needed to prevent flapping.
     # The k8s-copier specification.
-    k8s-copier.fig.org/replace-spec.template.spec: "helmreleases:cloud-release:spec"
+    k8s-copier.fig.org/replace-spec.template.spec: "helmreleases.v1beta1.flux.weave.works:cloud-release:spec"
 spec:
   placement:
     clusterSelector:

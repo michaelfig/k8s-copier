@@ -49,9 +49,10 @@ type Controller struct {
 	Context context.Context
 
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
+	factories      []dynamicinformer.DynamicSharedInformerFactory
 	queue          workqueue.RateLimitingInterface
 	syncedFuncs    []cache.InformerSynced
-	syncHandler    func(context.Context, string) error
+	syncHandler    func(context.Context, string, <-chan struct{}) error
 	workerWg       sync.WaitGroup
 }
 
@@ -65,6 +66,7 @@ func (q *QueuingEventHandler) Enqueue(obj interface{}) {
 		runtime.HandleError(err)
 		return
 	}
+	// myMeta := obj.(meta.Interface)
 	q.Queue.Add(key)
 }
 
@@ -94,18 +96,18 @@ func New(ctx *context.Context, config *rest.Config, namespaces []string, targets
 	ctrl.syncHandler = ctrl.processNextWorkItem
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 
+	config.Host = "http://127.0.0.1:8001" // FIXME
 	dynclient := dynamic.NewForConfigOrDie(config)
-	var factories []dynamicinformer.DynamicSharedInformerFactory
 	if len(namespaces) == 0 {
 		// Create a single all-namespaces factory.
-		factories = []dynamicinformer.DynamicSharedInformerFactory{
+		ctrl.factories = []dynamicinformer.DynamicSharedInformerFactory{
 			dynamicinformer.NewDynamicSharedInformerFactory(dynclient, 0),
 		}
 	} else {
 		// Create a factory per namespace.
-		factories = make([]dynamicinformer.DynamicSharedInformerFactory, len(namespaces))
+		ctrl.factories = make([]dynamicinformer.DynamicSharedInformerFactory, len(namespaces))
 		for i, namespace := range namespaces {
-			factories[i] = dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+			ctrl.factories[i] = dynamicinformer.NewFilteredDynamicSharedInformerFactory(
 				dynclient,
 				0,
 				namespace,
@@ -115,16 +117,26 @@ func New(ctx *context.Context, config *rest.Config, namespaces []string, targets
 	}
 
 	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister, len(targets))
+	handler := &QueuingEventHandler{Queue: ctrl.queue}
 	for _, gvr := range targets {
-		ctrl.dynamicListers[gvr] = make([]cache.GenericLister, len(factories))
-		for _, factory := range factories {
-			target := factory.ForResource(gvr)
-			ctrl.dynamicListers[gvr] = append(ctrl.dynamicListers[gvr], target.Lister())
-			target.Informer().AddEventHandler(&QueuingEventHandler{Queue: ctrl.queue})
-			ctrl.syncedFuncs = append(ctrl.syncedFuncs, target.Informer().HasSynced)
+		informers := ctrl.AddInformers(&gvr, handler)
+		for _, informer := range informers {
+			ctrl.syncedFuncs = append(ctrl.syncedFuncs, informer.HasSynced)
 		}
 	}
 	return ctrl
+}
+
+func (c *Controller) AddInformers(gvr *schema.GroupVersionResource, handler cache.ResourceEventHandler) []cache.SharedInformer {
+	c.dynamicListers[*gvr] = make([]cache.GenericLister, len(c.factories))
+	informers := make([]cache.SharedInformer, len(c.factories))
+	for i, factory := range c.factories {
+		target := factory.ForResource(*gvr)
+		c.dynamicListers[*gvr][i] = target.Lister()
+		informers[i] = target.Informer()
+		informers[i].AddEventHandler(handler)
+	}
+	return informers
 }
 
 func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
@@ -132,6 +144,10 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
 	defer cancel()
 
 	log.Info("starting control loop")
+	for _, factory := range c.factories {
+		factory.Start(stopCh)
+	}
+
 	// wait for all the informer caches we depend to sync
 	if !cache.WaitForCacheSync(stopCh, c.syncedFuncs...) {
 		return fmt.Errorf("error waiting for informer caches to sync")
@@ -142,7 +158,7 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
 	for i := 0; i < workers; i++ {
 		c.workerWg.Add(1)
 		// TODO (@munnerz): make time.Second duration configurable
-		go wait.Until(func() { c.worker(ctx) }, time.Second, stopCh)
+		go wait.Until(func() { c.worker(ctx, stopCh) }, time.Second, stopCh)
 	}
 
 	<-stopCh
@@ -154,7 +170,7 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
 	return nil
 }
 
-func (c *Controller) worker(ctx context.Context) {
+func (c *Controller) worker(ctx context.Context, stopCh <-chan struct{}) {
 	// log := logf.FromContext(ctx)
 	defer c.workerWg.Done()
 	log.V(logf.DebugLevel).Info("starting worker")
@@ -164,6 +180,7 @@ func (c *Controller) worker(ctx context.Context) {
 			break
 		}
 
+		log.V(logf.DebugLevel).Infof("got obj %v", obj)
 		var key string
 		// use an inlined function so we can use defer
 		func() {
@@ -173,8 +190,8 @@ func (c *Controller) worker(ctx context.Context) {
 				return
 			}
 			// log := log.WithValues("key", key)
-			log.Info("syncing resource")
-			if err := c.syncHandler(ctx, key); err != nil {
+			log.Infof("syncing resource %s", key)
+			if err := c.syncHandler(ctx, key, stopCh); err != nil {
 				log.Error(err, "re-queuing item  due to error processing")
 				c.queue.AddRateLimited(obj)
 				return
@@ -186,7 +203,7 @@ func (c *Controller) worker(ctx context.Context) {
 	log.V(logf.DebugLevel).Info("exiting worker loop")
 }
 
-func (c *Controller) processNextWorkItem(ctx context.Context, key string) error {
+func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
 	// log := logf.FromContext(ctx)
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
@@ -194,7 +211,19 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string) error 
 		return nil
 	}
 
-	log.Info("Would process", namespace, name)
+	// FIXME: Find out if we have an annotation, and add it to the
+	// copier map if we do!
+	log.Infof("Would process %s %s", namespace, name)
+
+	gvr := ParseResource("secrets")
+	if _, ok := c.dynamicListers[*gvr]; !ok {
+		// Create new informers for the gvr we're watching.
+		informers := c.AddInformers(gvr, &QueuingEventHandler{Queue: c.queue})
+		for _, informer := range informers {
+			informer.Run(stopCh)
+		}
+	}
+
 	// ctx = logf.NewContext(ctx, logf.WithResource(log, crt))
 	// return c.Sync(ctx, crt)
 	return nil
@@ -204,11 +233,22 @@ func (c *Controller) Start(stopCh <-chan struct{}) error {
 	return c.Run(3, stopCh)
 }
 
-func RegisterAll(mgr ctrl.Manager) error {
-	gvrs := []schema.GroupVersionResource{
-		{Group: "types.federation.k8s.io", Version: "v1alpha1", Resource: "federatedsecrets"},
+func ParseResource(resource string) *schema.GroupVersionResource {
+	gvrp, gr := schema.ParseResourceArg(resource)
+	if gvrp == nil {
+		gvr := gr.WithVersion("v1")
+		return &gvr
 	}
-	namespaces := []string{}
+	return gvrp
+}
+
+func RegisterAll(mgr ctrl.Manager) error {
+	// TODO(mfig): Parse the resources supplied by --target= option.
+	gvr := ParseResource("federatedsecrets.v1alpha1.types.federation.k8s.io")
+	gvrs := []schema.GroupVersionResource{
+		*gvr,
+	}
+	namespaces := []string{"cloud"}
 	ctx := context.TODO()
 	c := New(&ctx, mgr.GetConfig(), namespaces, gvrs)
 

@@ -10,3 +10,6 @@ bazel-*
 /.settings/
 /.project
 vendor/
+debug
+k8s-copier
+

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -257,7 +258,6 @@ func (c *Controller) FindResource(spec string) *schema.GroupVersionResource {
 	if gvrp == nil {
 		// Use discovery to find the group/version.
 		if gr.Group == "" {
-			maybePlural := gr.Resource + "s"
 			for _, resourceList := range c.resourceLists {
 				gv, err := schema.ParseGroupVersion(resourceList.GroupVersion)
 				if err != nil {
@@ -267,7 +267,7 @@ func (c *Controller) FindResource(spec string) *schema.GroupVersionResource {
 				for _, resource := range resourceList.APIResources {
 					if resource.Name == gr.Resource ||
 						resource.SingularName == gr.Resource ||
-						resource.Name == maybePlural {
+						strings.EqualFold(resource.Kind, gr.Resource) {
 						// Found a matching resource.
 						return &schema.GroupVersionResource{
 							Group:    gv.Group,

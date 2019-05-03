@@ -25,6 +25,9 @@ import (
 	"sync"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
+
 	"github.com/michaelfig/k8s-copier/logf"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -47,6 +50,8 @@ var (
 
 type Controller struct {
 	Context context.Context
+
+	resourceLists []*metav1.APIResourceList
 
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
 	factories      []dynamicinformer.DynamicSharedInformerFactory
@@ -91,12 +96,26 @@ func (q *QueuingEventHandler) OnDelete(obj interface{}) {
 
 // New returns a new controller. It sets up the informer handler
 // functions for all the types it watches.
-func New(ctx *context.Context, config *rest.Config, namespaces []string, targets []schema.GroupVersionResource) *Controller {
+func New(ctx *context.Context, config *rest.Config, namespaces, targets []string) *Controller {
 	ctrl := &Controller{Context: *ctx}
 	ctrl.syncHandler = ctrl.processNextWorkItem
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 
 	config.Host = "http://127.0.0.1:8001" // FIXME
+
+	// TODO(mfig): We currently only detect resources once, maybe refresh.
+	dclient := discovery.NewDiscoveryClientForConfigOrDie(config)
+	resourceLists, err := dclient.ServerPreferredResources()
+	if err != nil {
+		panic(err)
+	}
+	ctrl.resourceLists = resourceLists
+
+	gvrs := make([]schema.GroupVersionResource, len(targets))
+	for i, target := range targets {
+		gvrs[i] = *ctrl.FindResource(target)
+	}
+
 	dynclient := dynamic.NewForConfigOrDie(config)
 	if len(namespaces) == 0 {
 		// Create a single all-namespaces factory.
@@ -118,7 +137,7 @@ func New(ctx *context.Context, config *rest.Config, namespaces []string, targets
 
 	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister, len(targets))
 	handler := &QueuingEventHandler{Queue: ctrl.queue}
-	for _, gvr := range targets {
+	for _, gvr := range gvrs {
 		informers := ctrl.AddInformers(&gvr, handler)
 		for _, informer := range informers {
 			ctrl.syncedFuncs = append(ctrl.syncedFuncs, informer.HasSynced)
@@ -215,7 +234,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	// copier map if we do!
 	log.Infof("Would process %s %s", namespace, name)
 
-	gvr := ParseResource("secrets")
+	gvr := c.FindResource("secret")
 	if _, ok := c.dynamicListers[*gvr]; !ok {
 		// Create new informers for the gvr we're watching.
 		informers := c.AddInformers(gvr, &QueuingEventHandler{Queue: c.queue})
@@ -233,9 +252,33 @@ func (c *Controller) Start(stopCh <-chan struct{}) error {
 	return c.Run(3, stopCh)
 }
 
-func ParseResource(resource string) *schema.GroupVersionResource {
-	gvrp, gr := schema.ParseResourceArg(resource)
+func (c *Controller) FindResource(spec string) *schema.GroupVersionResource {
+	gvrp, gr := schema.ParseResourceArg(spec)
 	if gvrp == nil {
+		// Use discovery to find the group/version.
+		if gr.Group == "" {
+			maybePlural := gr.Resource + "s"
+			for _, resourceList := range c.resourceLists {
+				gv, err := schema.ParseGroupVersion(resourceList.GroupVersion)
+				if err != nil {
+					// FIXME: Do something with the error.
+					continue
+				}
+				for _, resource := range resourceList.APIResources {
+					if resource.Name == gr.Resource ||
+						resource.SingularName == gr.Resource ||
+						resource.Name == maybePlural {
+						// Found a matching resource.
+						return &schema.GroupVersionResource{
+							Group:    gv.Group,
+							Resource: resource.Name,
+							Version:  gv.Version,
+						}
+					}
+				}
+			}
+		}
+		// It's probably legacy (v1)
 		gvr := gr.WithVersion("v1")
 		return &gvr
 	}
@@ -244,13 +287,10 @@ func ParseResource(resource string) *schema.GroupVersionResource {
 
 func RegisterAll(mgr ctrl.Manager) error {
 	// TODO(mfig): Parse the resources supplied by --target= option.
-	gvr := ParseResource("federatedsecrets.v1alpha1.types.federation.k8s.io")
-	gvrs := []schema.GroupVersionResource{
-		*gvr,
-	}
+	targets := []string{"federatedsecret"}
 	namespaces := []string{"cloud"}
 	ctx := context.TODO()
-	c := New(&ctx, mgr.GetConfig(), namespaces, gvrs)
+	c := New(&ctx, mgr.GetConfig(), namespaces, targets)
 
 	mgr.Add(c)
 	return nil

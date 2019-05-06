@@ -1,11 +1,24 @@
 # build stage
 FROM golang:alpine AS build-env
 RUN apk add git gcc
-ADD . /src
-RUN cd /src && go build -o k8s-copier
+
+WORKDIR $GOPATH/src/github.com/michaelfig/k8s-copier
+COPY . .
+
+# Download all the dependencies
+RUN GO111MODULE=on go mod vendor
+
+# Install the binaries
+RUN go install -v ./cmd/k8s-copier
+
+WORKDIR /app
+RUN cp $GOPATH/bin/k8s-copier /app/
 
 # final stage
 FROM alpine
+
+LABEL maintainer="Michael FIG <michael+k8s-copier@fig.org>"
+
 WORKDIR /app
-COPY --from=build-env /src/k8s-copier /app/
+COPY --from=build-env /app/k8s-copier /app/
 CMD ./k8s-copier

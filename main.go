@@ -18,18 +18,14 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"os"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/discovery"
-
-	"github.com/michaelfig/k8s-copier/logf"
+	"github.com/michaelfig/k8s-copier/pkg/discovery"
+	logf "github.com/michaelfig/k8s-copier/pkg/logs"
+	log "k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -39,9 +35,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
-	"k8s.io/klog"
 
-	log "k8s.io/klog"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -52,8 +46,7 @@ var (
 type Controller struct {
 	Context context.Context
 
-	resourceLists []*metav1.APIResourceList
-
+	discovery      *discovery.Client
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
 	factories      []dynamicinformer.DynamicSharedInformerFactory
 	queue          workqueue.RateLimitingInterface
@@ -97,25 +90,14 @@ func (q *QueuingEventHandler) OnDelete(obj interface{}) {
 
 // New returns a new controller. It sets up the informer handler
 // functions for all the types it watches.
-func New(ctx *context.Context, config *rest.Config, namespaces, targets []string) *Controller {
+func New(ctx *context.Context, config *rest.Config, namespaces []string) *Controller {
 	ctrl := &Controller{Context: *ctx}
 	ctrl.syncHandler = ctrl.processNextWorkItem
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 
 	config.Host = "http://127.0.0.1:8001" // FIXME
 
-	// TODO(mfig): We currently only detect resources once, maybe refresh.
-	dclient := discovery.NewDiscoveryClientForConfigOrDie(config)
-	resourceLists, err := dclient.ServerPreferredResources()
-	if err != nil {
-		panic(err)
-	}
-	ctrl.resourceLists = resourceLists
-
-	gvrs := make([]schema.GroupVersionResource, len(targets))
-	for i, target := range targets {
-		gvrs[i] = *ctrl.FindResource(target)
-	}
+	ctrl.discovery = discovery.NewForConfigOrDie(config)
 
 	dynclient := dynamic.NewForConfigOrDie(config)
 	if len(namespaces) == 0 {
@@ -135,16 +117,24 @@ func New(ctx *context.Context, config *rest.Config, namespaces, targets []string
 			)
 		}
 	}
+	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
+	return ctrl
+}
 
-	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister, len(targets))
-	handler := &QueuingEventHandler{Queue: ctrl.queue}
+func (c *Controller) AddTarget(target string) error {
+	gvrs, err := c.discovery.FindResources(target)
+	if err != nil {
+		return err
+	}
+
+	handler := &QueuingEventHandler{Queue: c.queue}
 	for _, gvr := range gvrs {
-		informers := ctrl.AddInformers(&gvr, handler)
+		informers := c.AddInformers(gvr, handler)
 		for _, informer := range informers {
-			ctrl.syncedFuncs = append(ctrl.syncedFuncs, informer.HasSynced)
+			c.syncedFuncs = append(c.syncedFuncs, informer.HasSynced)
 		}
 	}
-	return ctrl
+	return nil
 }
 
 func (c *Controller) AddInformers(gvr *schema.GroupVersionResource, handler cache.ResourceEventHandler) []cache.SharedInformer {
@@ -228,15 +218,22 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		log.Error(err, "invalid resource key")
-		return nil
+		return err
 	}
 
 	// FIXME: Find out if we have an annotation, and add it to the
 	// copier map if we do!
 	log.Infof("Would process %s %s", namespace, name)
 
-	gvr := c.FindResource("secret")
-	if _, ok := c.dynamicListers[*gvr]; !ok {
+	gvrs, err := c.discovery.FindResources("secret")
+	if err != nil {
+		log.Error(err, "error finding resource")
+		return err
+	}
+	for _, gvr := range gvrs {
+		if _, ok := c.dynamicListers[*gvr]; ok {
+			continue
+		}
 		// Create new informers for the gvr we're watching.
 		informers := c.AddInformers(gvr, &QueuingEventHandler{Queue: c.queue})
 		for _, informer := range informers {
@@ -253,81 +250,39 @@ func (c *Controller) Start(stopCh <-chan struct{}) error {
 	return c.Run(3, stopCh)
 }
 
-func (c *Controller) FindResource(spec string) *schema.GroupVersionResource {
-	gvrp, gr := schema.ParseResourceArg(spec)
-	if gvrp != nil {
-		// Fully-specified.
-		return gvrp
-	}
-
-	// Use discovery to find the group/version.
-	for _, resourceList := range c.resourceLists {
-		gv, err := schema.ParseGroupVersion(resourceList.GroupVersion)
-		if err != nil {
-			// FIXME: Do something with the error.
-			continue
-		}
-		if gr.Group != "" && gv.Group != gr.Group {
-			// Group was specified, and it's not the same.
-			continue
-		}
-		for _, resource := range resourceList.APIResources {
-			if resource.Name == gr.Resource ||
-				resource.SingularName == gr.Resource ||
-				strings.EqualFold(resource.Kind, gr.Resource) {
-				// Found a matching resource.
-				return &schema.GroupVersionResource{
-					Group:    gv.Group,
-					Resource: resource.Name,
-					Version:  gv.Version,
-				}
-			}
-		}
-	}
-
-	// Treat as legacy (v1)
-	gvr := gr.WithVersion("v1")
-	return &gvr
-}
-
 func RegisterAll(mgr ctrl.Manager) error {
 	// TODO(mfig): Parse the resources supplied by --target= option.
 	targets := []string{"federatedsecret"}
 	namespaces := []string{"cloud"}
 	ctx := context.TODO()
-	c := New(&ctx, mgr.GetConfig(), namespaces, targets)
+	c := New(&ctx, mgr.GetConfig(), namespaces)
+
+	for _, target := range targets {
+		if err := c.AddTarget(target); err != nil {
+			return err
+		}
+	}
 
 	mgr.Add(c)
 	return nil
 }
 
-// InitLogs initializes logs the way we want for kubernetes.
-func InitLogs(fs *flag.FlagSet) {
-	if fs == nil {
-		fs = flag.CommandLine
-	}
-	klog.InitFlags(fs)
-	fs.Set("logtostderr", "true")
-
-	log.SetOutput(os.Stdout)
-}
-
 func main() {
-	InitLogs(nil)
+	logf.InitLogs(nil)
 
 	stopCh := ctrl.SetupSignalHandler()
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
 
 	if err != nil {
-		klog.Fatalf("error creating manager: %v", err)
+		log.Fatalf("error creating manager: %v", err)
 	}
 
 	// TODO(directxman12): enabled controllers for separate injectors?
 	if err := RegisterAll(mgr); err != nil {
-		klog.Fatalf("error registering controllers: %v", err)
+		log.Fatalf("error registering controllers: %v", err)
 	}
 
 	if err := mgr.Start(stopCh); err != nil {
-		klog.Fatalf("error running manager: %v", err)
+		log.Fatalf("error running manager: %v", err)
 	}
 }

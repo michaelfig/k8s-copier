@@ -8,6 +8,10 @@ COPY . .
 # Download all the dependencies
 RUN GO111MODULE=on go mod vendor
 
+# FIXME: Edit the non-namespaced dynamicinformer
+RUN sed -i '' -e 's/namespace:.*,/namespace: namespace,/' \
+    vendor/k8s.io/client-go/dynamic/dynamicinformer/informer.go
+
 # Install the binaries
 RUN go install -v ./cmd/k8s-copier
 

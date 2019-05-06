@@ -1,6 +1,6 @@
 /*
 Copyright 2019 Michael FIG <michael+k8s-copier@fig.org>
-Copyright 2018 
+Copyright 2018
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -90,12 +90,9 @@ func (q *QueuingEventHandler) OnDelete(obj interface{}) {
 // New returns a new controller.
 func New(ctx *context.Context, config *rest.Config, namespaces []string) *Controller {
 	ctrl := &Controller{Context: *ctx}
-	ctrl.syncHandler = ctrl.processNextWorkItem
+	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
-
-	config.Host = "http://127.0.0.1:8001" // FIXME
-
-	ctrl.discovery = discovery.NewForConfigOrDie(config)
+	ctrl.syncHandler = ctrl.processNextWorkItem
 
 	dynclient := dynamic.NewForConfigOrDie(config)
 	if len(namespaces) == 0 {
@@ -115,7 +112,8 @@ func New(ctx *context.Context, config *rest.Config, namespaces []string) *Contro
 			)
 		}
 	}
-	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
+
+	ctrl.discovery = discovery.NewForConfigOrDie(config)
 	return ctrl
 }
 

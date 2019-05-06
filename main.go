@@ -255,34 +255,39 @@ func (c *Controller) Start(stopCh <-chan struct{}) error {
 
 func (c *Controller) FindResource(spec string) *schema.GroupVersionResource {
 	gvrp, gr := schema.ParseResourceArg(spec)
-	if gvrp == nil {
-		// Use discovery to find the group/version.
-		if gr.Group == "" {
-			for _, resourceList := range c.resourceLists {
-				gv, err := schema.ParseGroupVersion(resourceList.GroupVersion)
-				if err != nil {
-					// FIXME: Do something with the error.
-					continue
-				}
-				for _, resource := range resourceList.APIResources {
-					if resource.Name == gr.Resource ||
-						resource.SingularName == gr.Resource ||
-						strings.EqualFold(resource.Kind, gr.Resource) {
-						// Found a matching resource.
-						return &schema.GroupVersionResource{
-							Group:    gv.Group,
-							Resource: resource.Name,
-							Version:  gv.Version,
-						}
-					}
+	if gvrp != nil {
+		// Fully-specified.
+		return gvrp
+	}
+
+	// Use discovery to find the group/version.
+	for _, resourceList := range c.resourceLists {
+		gv, err := schema.ParseGroupVersion(resourceList.GroupVersion)
+		if err != nil {
+			// FIXME: Do something with the error.
+			continue
+		}
+		if gr.Group != "" && gv.Group != gr.Group {
+			// Group was specified, and it's not the same.
+			continue
+		}
+		for _, resource := range resourceList.APIResources {
+			if resource.Name == gr.Resource ||
+				resource.SingularName == gr.Resource ||
+				strings.EqualFold(resource.Kind, gr.Resource) {
+				// Found a matching resource.
+				return &schema.GroupVersionResource{
+					Group:    gv.Group,
+					Resource: resource.Name,
+					Version:  gv.Version,
 				}
 			}
 		}
-		// It's probably legacy (v1)
-		gvr := gr.WithVersion("v1")
-		return &gvr
 	}
-	return gvrp
+
+	// Treat as legacy (v1)
+	gvr := gr.WithVersion("v1")
+	return &gvr
 }
 
 func RegisterAll(mgr ctrl.Manager) error {

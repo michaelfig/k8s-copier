@@ -31,7 +31,7 @@ The main use case for k8s-copier is to update [Federation v2](https://github.com
 # kubectl label federatedcluster mymaster cluster-master=true
 ```
 
-This is assuming your master cluster, which has been added with `kubefed2 join` and is also running the Federation control plane, is named `mymaster`.
+This is assuming your master cluster, which has been added with `kubefedctl join` and is also running the Federation control plane, is named `mymaster`.
 
 ## Cert-Manager integration
 
@@ -66,9 +66,19 @@ metadata:
   name: cloud-secret
   namespace: cloud
   annotations:
+    flux.weave.works/ignore: "true" # Needed to prevent flapping.
     # The k8s-copier specification.
     k8s-copier.fig.org/replace-spec.template.data: "secret:cloud-secret-master:data"
-    k8s-copier.fig.org/replace-spec.template.type: "secret:cloud-secret-master:type"
+spec:
+  placement:
+    clusterSelector:
+      matchExpressions:
+      # Don't update the master cluster, as cert-manager does that.
+      - key: cluster-master
+        operator: DoesNotExist
+  template:
+    type: kubernetes.io/tls
+    data: 
 ```
 
 After these resources are added, cert-manager should pick up the Certificate and create the Secret named `cloud-secret-master`.  Then, k8s-copier will detect the Secret, and add its
@@ -135,7 +145,7 @@ Whenever the `cloud-deployment-master` Deployment changes (such as when Flux det
 If you want to update a FederatedHelmRelease with values from a HelmRelease that is managed by Flux (which in turn generates an actual `helm` installation via the `flux-helm-operator`), first enable federation for HelmReleases:
 
 ```
-$ kubefed2 enable helmrelease
+$ kubefedctl enable helmrelease
 ```
 
 Next, make sure that k8s-copier has the `--target=federatedhelmrelease` flag set and the `cluster-master=true` label has been applied as above.
@@ -180,6 +190,8 @@ spec:
       # Don't update the master cluster, as Flux does that.
       - key: cluster-master
         operator: DoesNotExist
+  template:
+    spec: # ... Your default spec for the helmrelease
 ```
 
 After these resources are added, Flux should manage GitOps changes and update the HelmRelease named `cloud-release`.  Then, k8s-copier will detect the HelmRelease changes, and add its

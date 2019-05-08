@@ -10,7 +10,7 @@ Annotations on a target resource (one whose singular or plural form is passed as
 
 | Annotation | Value | Description |
 | --- | --- | --- |
-| k8s-copier.fig.org/replace-*DST-PATH* | *PLURAL*:*RESOURCE*:*SRC-PATH* | Replace *DST-PATH* on the current resource with the contents of *SRC-PATH* from *RESOURCE* (of kind *PLURAL*) |
+| k8s-copier.fig.org/replace-*DST-PATH* | *RESOURCE*:*INSTANCE*:*SRC-PATH* | Replace *DST-PATH* on the current resource with the contents of *SRC-PATH* from *INSTANCE* (of kind *RESOURCE*) |
 | k8s-copier.fig.org/replace-*DST-PATH* | json:*JSON-STRING* | Replace *DST-PATH* on the current resource with the stringified JSON data *JSON-STRING* |
 
 Strategic merge ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/1)) and JSON Merge Patch ([relevant issue](https://github.com/michaelfig/k8s-copier/issues/2)) annotations are planned, but not yet implemented.  Please add a thumbs-up or note explaining your use case to the relevant issue if the feature would be useful to you.

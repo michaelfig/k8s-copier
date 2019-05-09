@@ -17,32 +17,10 @@ limitations under the License.
 package main
 
 import (
-	"context"
-
-	copier "github.com/michaelfig/k8s-copier/pkg/controller"
 	logf "github.com/michaelfig/k8s-copier/pkg/logs"
 	log "k8s.io/klog"
-
 	ctrl "sigs.k8s.io/controller-runtime"
 )
-
-func RegisterAll(mgr ctrl.Manager) error {
-	// TODO(mfig): Parse the resources supplied by --target= option.
-	targets := []string{"federatedsecret"}
-	namespaces := []string{"cloud"}
-
-	ctx := context.TODO()
-	c := copier.New(&ctx, mgr.GetConfig(), namespaces)
-
-	for _, target := range targets {
-		if err := c.AddTarget(target); err != nil {
-			return err
-		}
-	}
-
-	mgr.Add(c)
-	return nil
-}
 
 func main() {
 	logf.InitLogs(nil)
@@ -54,8 +32,8 @@ func main() {
 		log.Fatalf("error creating manager: %v", err)
 	}
 
-	if err := RegisterAll(mgr); err != nil {
-		log.Fatalf("error registering controllers: %v", err)
+	if err := Register(mgr); err != nil {
+		log.Fatalf("error registering controller: %v", err)
 	}
 
 	if err := mgr.Start(stopCh); err != nil {

@@ -41,17 +41,17 @@ func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet) {
 	// FIXME: Add from the actual flags.
 	fs.StringSliceVarP(&o.Namespaces, "namespace", "n", []string{}, ""+
 		"Specify the list of namespaces to act on."+
-		" If none specified, handle all namespaces.")
+		" (default all namespaces)")
 	fs.StringSliceVarP(&o.Targets, "target", "t", []string{}, ""+
 		"Specify the target resource types to update."+
-		" Should be {KIND|RESOURCE}[.VERSION[.GROUP]]")
+		" Each should be {KIND|RESOURCE}[[.VERSION].GROUP]")
 }
 
 func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 	o := NewCopierControllerOptions()
 	cmd := &cobra.Command{
 		Use:   "k8s-copier",
-		Short: "k8s-copier is a dynamic Kubernetes resource-to-resource copier",
+		Short: "k8s-copier is a Kubernetes dynamic resource-to-resource copier",
 
 		Run: func(cmd *cobra.Command, args []string) {
 			log.Infof("starting k8s-copier %s", AppVersion)

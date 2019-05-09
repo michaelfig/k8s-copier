@@ -60,10 +60,6 @@ func NewForConfigOrDie(config *rest.Config) *Client {
 
 func (c *Client) FindResources(spec string) ([]*schema.GroupVersionResource, error) {
 	gvrp, gr := schema.ParseResourceArg(spec)
-	if gvrp != nil {
-		// Fully-specified.
-		return []*schema.GroupVersionResource{gvrp}, nil
-	}
 
 	// Use discovery to find the group/version.
 	var gvrs []*schema.GroupVersionResource
@@ -73,14 +69,22 @@ func (c *Client) FindResources(spec string) ([]*schema.GroupVersionResource, err
 			// FIXME: Do something with the error.
 			continue
 		}
-		if gr.Group != "" && gv.Group != gr.Group {
-			// Group was specified, and it's not the same.
+		var resourceSpec string
+		if gvrp != nil && gv.Group == gvrp.Group && gv.Version == gvrp.Version {
+			// Specified version.group matches exactly.  Use its resource.
+			resourceSpec = gvrp.Resource
+		} else if gr.Group == "" || gv.Group == gr.Group {
+			// Match group, use its resource.
+			resourceSpec = gr.Resource
+		} else {
+			// No match.
 			continue
 		}
+
 		for _, resource := range resourceList.APIResources {
-			if resource.Name == gr.Resource ||
-				resource.SingularName == gr.Resource ||
-				strings.EqualFold(resource.Kind, gr.Resource) {
+			if resource.Name == resourceSpec ||
+				resource.SingularName == resourceSpec ||
+				strings.EqualFold(resource.Kind, resourceSpec) {
 				// Found a matching resource.
 				gvrs = append(gvrs, &schema.GroupVersionResource{
 					Group:    gv.Group,

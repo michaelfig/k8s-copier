@@ -17,26 +17,26 @@ limitations under the License.
 package main
 
 import (
+	"flag"
+
 	logf "github.com/michaelfig/k8s-copier/pkg/logs"
 	log "k8s.io/klog"
+	logr "k8s.io/klog/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func main() {
 	logf.InitLogs(nil)
+	defer log.Flush()
+	logger := logr.New().WithName("k8s-copier")
+	ctrl.SetLogger(logger)
 
 	stopCh := ctrl.SetupSignalHandler()
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
+	cmd := NewCommandCopierController(stopCh)
+	cmd.Flags().AddGoFlagSet(flag.CommandLine)
 
-	if err != nil {
-		log.Fatalf("error creating manager: %v", err)
-	}
-
-	if err := Register(mgr); err != nil {
-		log.Fatalf("error registering controller: %v", err)
-	}
-
-	if err := mgr.Start(stopCh); err != nil {
-		log.Fatalf("error running manager: %v", err)
+	flag.CommandLine.Parse([]string{})
+	if err := cmd.Execute(); err != nil {
+		log.Fatal(err)
 	}
 }

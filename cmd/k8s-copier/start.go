@@ -39,10 +39,12 @@ func (o *CopierControllerOptions) Register(mgr ctrl.Manager) error {
 
 func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet) {
 	// FIXME: Add from the actual flags.
-	fs.StringArrayVar(&o.Namespaces, "namespace", []string{}, ""+
-		"Specify the list of namespaces to act on.")
-	fs.StringArrayVar(&o.Targets, "target", []string{}, ""+
-		"Specify the targets to update.")
+	fs.StringArrayVarP(&o.Namespaces, "namespace", "n", []string{}, ""+
+		"Specify the list of namespaces to act on."+
+		" If none specified, handle all namespaces.")
+	fs.StringArrayVarP(&o.Targets, "target", "t", []string{}, ""+
+		"Specify the target resource types to update."+
+		" Should be {KIND|RESOURCE}[.VERSION[.GROUP]]")
 }
 
 func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {

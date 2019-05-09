@@ -34,14 +34,14 @@ type Client struct {
 func NewForConfig(config *rest.Config) (*Client, error) {
 	c := &Client{}
 
-	// TODO(mfig): We currently only detect resources once, maybe refresh.
 	client, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
 		return nil, err
 	}
 	c.client = client
 
-	resourceLists, err := c.client.ServerPreferredResources()
+	// TODO(mfig): We currently only detect resources once, maybe refresh.
+	_, resourceLists, err := c.client.ServerGroupsAndResources()
 	if err != nil {
 		return nil, err
 	}

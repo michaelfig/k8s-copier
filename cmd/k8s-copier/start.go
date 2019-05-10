@@ -28,6 +28,7 @@ func (o *CopierControllerOptions) Register(mgr ctrl.Manager) error {
 	ctx := context.TODO()
 	c := copier.New(&ctx, mgr.GetConfig(), o.Namespaces)
 
+	// Subscribe to the target resources.
 	for _, target := range o.Targets {
 		if err := c.AddTarget(target); err != nil {
 			return err

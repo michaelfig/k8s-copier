@@ -47,17 +47,44 @@ var (
 type Controller struct {
 	Context context.Context
 
-	discovery         *discovery.Client
-	dynamicListers    map[schema.GroupVersionResource][]cache.GenericLister
-	factories         []dynamicinformer.DynamicSharedInformerFactory
-	sourceQueue       workqueue.RateLimitingInterface
-	sourceSyncHandler func(context.Context, string, <-chan struct{}) error
-	sourceWorkerWg    sync.WaitGroup
-	syncedFuncs       []cache.InformerSynced
-	targetAnnotations map[string]map[string]string
-	targetQueue       workqueue.RateLimitingInterface
-	targetSyncHandler func(context.Context, string, <-chan struct{}) error
-	targetWorkerWg    sync.WaitGroup
+	discovery      *discovery.Client
+	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
+	annotations    map[string]map[string]string
+	factories      []dynamicinformer.DynamicSharedInformerFactory
+	queue          workqueue.RateLimitingInterface
+	syncHandler    func(context.Context, string, <-chan struct{}) error
+	workerWg       sync.WaitGroup
+	syncedFuncs    []cache.InformerSynced
+
+	sources map[schema.GroupVersionResource]map[string]map[Target]bool
+	targets map[schema.GroupVersionResource]bool
+}
+
+type Target struct {
+	Resource *Resource
+	Rule     *Rule
+}
+
+type Resource struct {
+	Name      string
+	Namespace string
+	Kind      string
+}
+
+type ResourceInstance struct {
+	Resource *Resource
+	GVR      schema.GroupVersionResource
+	Object   interface{}
+}
+
+type Rule struct {
+	Name       string
+	SourcePath string
+	TargetPath string
+}
+
+func (r *Resource) Key() string {
+	return r.Namespace + "/" + r.Name
 }
 
 type QueuingEventHandler struct {
@@ -110,12 +137,13 @@ func (q *QueuingEventHandler) OnDelete(obj interface{}) {
 // New returns a new controller.
 func New(ctx *context.Context, config *rest.Config, namespaces []string) *Controller {
 	ctrl := &Controller{Context: *ctx}
-	ctrl.targetAnnotations = make(map[string]map[string]string)
+	ctrl.annotations = make(map[string]map[string]string)
 	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
-	ctrl.sourceQueue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "source")
-	ctrl.targetQueue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "target")
-	ctrl.sourceSyncHandler = ctrl.processNextSourceWorkItem
-	ctrl.targetSyncHandler = ctrl.processNextTargetWorkItem
+	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
+	ctrl.syncHandler = ctrl.processNextWorkItem
+
+	ctrl.sources = make(map[schema.GroupVersionResource]map[string]map[Target]bool)
+	ctrl.targets = make(map[schema.GroupVersionResource]bool)
 
 	dynclient := dynamic.NewForConfigOrDie(config)
 	if len(namespaces) == 0 {
@@ -148,10 +176,11 @@ func (c *Controller) AddTarget(target string) error {
 
 	for _, gvr := range gvrs {
 		handler := &QueuingEventHandler{
-			Queue:       c.targetQueue,
+			Queue:       c.queue,
 			GVR:         gvr,
-			Annotations: c.targetAnnotations,
+			Annotations: c.annotations,
 		}
+		c.targets[*gvr] = true
 		informers := c.AddInformers(gvr, handler)
 		for _, informer := range informers {
 			c.syncedFuncs = append(c.syncedFuncs, informer.HasSynced)
@@ -189,136 +218,173 @@ func (c *Controller) Run(workers int, stopCh <-chan struct{}) error {
 	log.Info("synced all caches for control loop")
 
 	for i := 0; i < workers; i++ {
-		c.targetWorkerWg.Add(1)
-		go wait.Until(func() { c.targetWorker(ctx, stopCh) }, time.Second, stopCh)
-	}
-
-	for i := 0; i < workers; i++ {
-		c.sourceWorkerWg.Add(1)
-		go wait.Until(func() { c.sourceWorker(ctx, stopCh) }, time.Second, stopCh)
+		c.workerWg.Add(1)
+		go wait.Until(func() { c.worker(ctx, stopCh) }, time.Second, stopCh)
 	}
 
 	<-stopCh
 	log.V(logf.DebugLevel).Info("shutting down queues as workqueue signaled shutdown")
-	c.sourceQueue.ShutDown()
-	c.targetQueue.ShutDown()
+	c.queue.ShutDown()
 	log.V(logf.DebugLevel).Info("waiting for workers to exit...")
-	c.sourceWorkerWg.Wait()
-	c.targetWorkerWg.Wait()
+	c.workerWg.Wait()
 	log.V(logf.DebugLevel).Info("workers exited")
 	return nil
 }
 
-func (c *Controller) targetWorker(ctx context.Context, stopCh <-chan struct{}) {
+func (c *Controller) worker(ctx context.Context, stopCh <-chan struct{}) {
 	// log := logf.FromContext(ctx)
-	defer c.targetWorkerWg.Done()
-	log.V(logf.DebugLevel).Info("starting target worker")
+	defer c.workerWg.Done()
+	log.V(logf.DebugLevel).Info("starting worker")
 	for {
-		obj, shutdown := c.targetQueue.Get()
+		obj, shutdown := c.queue.Get()
 		if shutdown {
 			break
 		}
 
-		log.V(logf.DebugLevel).Infof("got target obj %v", obj)
+		log.V(logf.DebugLevel).Infof("got obj %v", obj)
 		var key string
 		// use an inlined function so we can use defer
 		func() {
-			defer c.targetQueue.Done(obj)
+			defer c.queue.Done(obj)
 			var ok bool
 			if key, ok = obj.(string); !ok {
 				return
 			}
 			// log := log.WithValues("key", key)
-			log.Infof("syncing target resource %s", key)
-			if err := c.targetSyncHandler(ctx, key, stopCh); err != nil {
-				log.Error(err, "re-queuing item  due to error processing")
-				c.targetQueue.AddRateLimited(obj)
+			log.Infof("syncing resource %s", key)
+			if err := c.syncHandler(ctx, key, stopCh); err != nil {
+				log.Error(err, "re-queuing item due to error processing")
+				c.queue.AddRateLimited(obj)
 				return
 			}
-			log.Info("finished processing target work item")
-			c.targetQueue.Forget(obj)
+			log.Info("finished processing work item")
+			c.queue.Forget(obj)
 		}()
 	}
-	log.V(logf.DebugLevel).Info("exiting target worker loop")
+	log.V(logf.DebugLevel).Info("exiting worker loop")
 }
 
-func (c *Controller) sourceWorker(ctx context.Context, stopCh <-chan struct{}) {
-	// log := logf.FromContext(ctx)
-	defer c.sourceWorkerWg.Done()
-	log.V(logf.DebugLevel).Info("starting source worker")
-	for {
-		obj, shutdown := c.sourceQueue.Get()
-		if shutdown {
-			break
+func (c *Controller) FindResourceInstance(resource *Resource) (*ResourceInstance, error) {
+	gvrs, err := c.discovery.FindResources(resource.Kind)
+	if err != nil {
+		return nil, err
+	}
+	if dls, ok := c.dynamicListers[*gvrs[0]]; ok {
+		// We are listing it already.
+		obj, err := FindInListers(dls, resource.Namespace, resource.Name)
+		if err != nil {
+			log.Error(err, "error looking up resource")
 		}
-
-		log.V(logf.DebugLevel).Infof("got source obj %v", obj)
-		var key string
-		// use an inlined function so we can use defer
-		func() {
-			defer c.sourceQueue.Done(obj)
-			var ok bool
-			if key, ok = obj.(string); !ok {
-				return
-			}
-			// log := log.WithValues("key", key)
-			log.Infof("syncing source resource %s", key)
-			if err := c.sourceSyncHandler(ctx, key, stopCh); err != nil {
-				log.Error(err, "re-queuing item  due to error processing")
-				c.sourceQueue.AddRateLimited(obj)
-				return
-			}
-			log.Info("finished processing source work item")
-			c.sourceQueue.Forget(obj)
-		}()
+		if obj != nil {
+			return &ResourceInstance{
+				Resource: resource,
+				GVR:      *gvrs[0],
+				Object:   obj,
+			}, nil
+		}
 	}
-	log.V(logf.DebugLevel).Info("exiting source worker loop")
+	return nil, nil
 }
 
-func (c *Controller) processNextTargetWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
+func (c *Controller) InvokeRule(rule *Rule, target, source *ResourceInstance) error {
+	log.Infof("would invoke rule %s on %s from %s", rule.Name, target.GVR, source.GVR)
+	return nil
+}
+
+func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
 	// log := logf.FromContext(ctx)
 	splits := strings.SplitN(key, ":", 2)
-	gvrs, err := c.discovery.FindResources(splits[0])
-	if err != nil {
-		log.Error(err, ": cannot find resource ", splits[0])
+	nsplits := strings.SplitN(splits[1], "/", 2)
+	self := &Resource{
+		Name:      nsplits[1],
+		Namespace: nsplits[0],
+		Kind:      splits[0],
+	}
+
+	source, err := c.FindResourceInstance(self)
+	if err != nil || source == nil {
+		log.Error(err, ": cannot find self instance ", self)
 		return err
+	}
+	if srcKeys, ok := c.sources[source.GVR]; ok {
+		if targets, ok2 := srcKeys[splits[1]]; ok2 {
+			for target := range targets {
+				targetInstance, err := c.FindResourceInstance(target.Resource)
+				if err != nil {
+					log.Error(err, ": cannot find target instance ", target)
+					continue
+				}
+
+				err = c.InvokeRule(target.Rule, targetInstance, source)
+				if err != nil {
+					log.Error(err, ": cannot invoke rule")
+					continue
+				}
+			}
+		}
+	}
+
+	target := source
+	if _, ok := c.targets[target.GVR]; !ok {
+		// Not a target.
+		return nil
 	}
 
 	// FIXME: Parse annotations to target handlers.
-	log.Infof("Would process %s annotations %s", key, c.targetAnnotations[key])
-	gvrs, err = c.discovery.FindResources("secret")
+	log.Infof("Would process %s annotations %s", key, c.annotations[key])
+	sourceResource := &Resource{
+		Name:      "cloud-azure-config-file",
+		Namespace: "cloud",
+		Kind:      "secret",
+	}
+	gvrs, err := c.discovery.FindResources(sourceResource.Kind)
 	if err != nil {
-		log.Error(err, "error finding resource")
+		log.Error(err, "error finding resource", sourceResource.Kind)
 		return err
 	}
 
-	namespace, name := "cloud", "cloud-azure-config-file"
+	targetObj := &Target{
+		Resource: self,
+		Rule:     &Rule{Name: "replace"},
+	}
+
+	// We can mark the target for this source.
 	for _, gvr := range gvrs {
-		if dls := c.dynamicListers[*gvr]; dls != nil {
-			// We are listing it already.
-			obj, err := FindInListers(dls, namespace, name)
-			if err != nil {
-				log.Error(err, " finding ", namespace, name)
-			}
-			if obj != nil {
-				log.Infof("found object %v", obj)
-			}
-			continue
+		if _, ok := c.sources[*gvr]; !ok {
+			c.sources[*gvr] = make(map[string]map[Target]bool)
 		}
-		// Create new informers for the gvr we're watching.
-		// Don't watch Annotations.
-		informers := c.AddInformers(gvr, &QueuingEventHandler{
-			Queue: c.sourceQueue,
-			GVR:   gvr,
-		})
-		for _, informer := range informers {
-			informer.Run(stopCh)
+		key := sourceResource.Key()
+		if targets := c.sources[*gvr][key]; targets != nil {
+			targets[*targetObj] = true
+		} else {
+			c.sources[*gvr][key] = make(map[Target]bool)
+			c.sources[*gvr][key][*targetObj] = true
+		}
+
+		if _, ok := c.dynamicListers[*gvr]; !ok {
+			// Create new informers for the gvr we're watching.
+			informers := c.AddInformers(gvr, &QueuingEventHandler{
+				Queue:       c.queue,
+				GVR:         gvr,
+				Annotations: c.annotations,
+			})
+			for _, informer := range informers {
+				informer.Run(stopCh)
+			}
 		}
 	}
 
-	// ctx = logf.NewContext(ctx, logf.WithResource(log, crt))
-	// return c.Sync(ctx, crt)
-	return nil
+	source, err = c.FindResourceInstance(sourceResource)
+	if err != nil {
+		return err
+	}
+
+	if source == nil {
+		return nil
+	}
+
+	// We already have the source, so invoke the rule.
+	return c.InvokeRule(targetObj.Rule, target, source)
 }
 
 func FindInListers(dls []cache.GenericLister, namespace, name string) (interface{}, error) {

@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -49,20 +50,31 @@ type Controller struct {
 
 	discovery      *discovery.Client
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
-	annotations    map[string]map[string]string
 	factories      []dynamicinformer.DynamicSharedInformerFactory
 	queue          workqueue.RateLimitingInterface
 	syncHandler    func(context.Context, string, <-chan struct{}) error
 	workerWg       sync.WaitGroup
 	syncedFuncs    []cache.InformerSynced
 
-	sources map[schema.GroupVersionResource]map[string]map[Target]bool
+	sources map[schema.GroupVersionResource]map[string]map[Resource]*Rule
 	targets map[schema.GroupVersionResource]bool
 }
 
-type Target struct {
-	Resource *Resource
-	Rule     *Rule
+type Rule struct {
+	Apply      func(*Controller, *Rule, *ResourceInstance) error
+	Target     *Resource
+	TargetPath string
+	Source     Source
+}
+
+type ResourceSource struct {
+	Spec *Resource
+	Path string
+}
+
+type Source interface {
+	Data() (interface{}, error)
+	Add(*Controller, <-chan struct{}, *Rule, *ResourceInstance) error
 }
 
 type Resource struct {
@@ -77,29 +89,17 @@ type ResourceInstance struct {
 	Object   interface{}
 }
 
-type Rule struct {
-	Name       string
-	SourcePath string
-	TargetPath string
-}
-
 func (r *Resource) Key() string {
 	return r.Namespace + "/" + r.Name
 }
 
 type QueuingEventHandler struct {
-	Annotations map[string]map[string]string
-	GVR         *schema.GroupVersionResource
-	Queue       workqueue.RateLimitingInterface
+	GVR   *schema.GroupVersionResource
+	Queue workqueue.RateLimitingInterface
 }
 
 func (q *QueuingEventHandler) Enqueue(obj interface{}) {
 	key, err := KeyFunc(obj)
-	if err != nil {
-		runtime.HandleError(err)
-		return
-	}
-	myMeta, err := meta.Accessor(obj)
 	if err != nil {
 		runtime.HandleError(err)
 		return
@@ -109,9 +109,6 @@ func (q *QueuingEventHandler) Enqueue(obj interface{}) {
 		fullKey += "." + q.GVR.Version + "." + q.GVR.Group
 	}
 	fullKey += ":" + key
-	if q.Annotations != nil {
-		q.Annotations[fullKey] = myMeta.GetAnnotations()
-	}
 	q.Queue.Add(fullKey)
 }
 
@@ -137,12 +134,11 @@ func (q *QueuingEventHandler) OnDelete(obj interface{}) {
 // New returns a new controller.
 func New(ctx *context.Context, config *rest.Config, namespaces []string) *Controller {
 	ctrl := &Controller{Context: *ctx}
-	ctrl.annotations = make(map[string]map[string]string)
 	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 	ctrl.syncHandler = ctrl.processNextWorkItem
 
-	ctrl.sources = make(map[schema.GroupVersionResource]map[string]map[Target]bool)
+	ctrl.sources = make(map[schema.GroupVersionResource]map[string]map[Resource]*Rule)
 	ctrl.targets = make(map[schema.GroupVersionResource]bool)
 
 	dynclient := dynamic.NewForConfigOrDie(config)
@@ -176,9 +172,8 @@ func (c *Controller) AddTarget(target string) error {
 
 	for _, gvr := range gvrs {
 		handler := &QueuingEventHandler{
-			Queue:       c.queue,
-			GVR:         gvr,
-			Annotations: c.annotations,
+			Queue: c.queue,
+			GVR:   gvr,
 		}
 		c.targets[*gvr] = true
 		informers := c.AddInformers(gvr, handler)
@@ -286,9 +281,18 @@ func (c *Controller) FindResourceInstance(resource *Resource) (*ResourceInstance
 	return nil, nil
 }
 
-func (c *Controller) InvokeRule(rule *Rule, target, source *ResourceInstance) error {
-	log.Infof("would invoke rule %s on %s from %s", rule.Name, target.GVR, source.GVR)
+func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error {
+	data, err := rule.Source.Data()
+	if err != nil {
+		return err
+	}
+	log.Infof("FIXME: would replace %s on %s from %s", rule.TargetPath, target.Resource.Key(), data)
 	return nil
+}
+
+func (src *ResourceSource) Data() (interface{}, error) {
+	// FIXME: Return the actual data for the source path.
+	return src.Path, nil
 }
 
 func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
@@ -308,14 +312,14 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	}
 	if srcKeys, ok := c.sources[source.GVR]; ok {
 		if targets, ok2 := srcKeys[splits[1]]; ok2 {
-			for target := range targets {
-				targetInstance, err := c.FindResourceInstance(target.Resource)
+			for target, rule := range targets {
+				targetInstance, err := c.FindResourceInstance(&target)
 				if err != nil {
 					log.Error(err, ": cannot find target instance ", target)
 					continue
 				}
 
-				err = c.InvokeRule(target.Rule, targetInstance, source)
+				err = rule.Apply(c, rule, targetInstance)
 				if err != nil {
 					log.Error(err, ": cannot invoke rule")
 					continue
@@ -330,43 +334,107 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 		return nil
 	}
 
-	// FIXME: Parse annotations to target handlers.
-	log.Infof("Would process %s annotations %s", key, c.annotations[key])
-	sourceResource := &Resource{
-		Name:      "cloud-azure-config-file",
-		Namespace: "cloud",
-		Kind:      "secret",
-	}
-	gvrs, err := c.discovery.FindResources(sourceResource.Kind)
+	// Parse annotations to target handlers.
+	myMeta, err := meta.Accessor(target.Object)
 	if err != nil {
-		log.Error(err, "error finding resource", sourceResource.Kind)
 		return err
 	}
 
-	targetObj := &Target{
-		Resource: self,
-		Rule:     &Rule{Name: "replace"},
+	for ann, value := range myMeta.GetAnnotations() {
+		targetRule := strings.TrimPrefix(ann, "k8s-copier.fig.org/")
+		if targetRule == ann {
+			continue
+		}
+		rule, err := c.ParseRule(targetRule, value, self.Namespace)
+		if err != nil {
+			log.Errorf("Error parsing %s annotation %s: %s", key, ann, err)
+			continue
+		}
+		if rule == nil {
+			continue
+		}
+
+		err = rule.Source.Add(c, stopCh, rule, target)
+		if err != nil {
+			log.Errorf("Error adding %s annotation %s: %s", key, ann, err)
+		}
+	}
+
+	return err
+}
+
+func ParseSource(source, defaultNamespace string) (Source, error) {
+	if jsonData := strings.TrimPrefix(source, "json:"); jsonData != source {
+		return nil, errors.New("FIXME: JSON source not implemented")
+	}
+	split := strings.SplitN(source, ":", 3)
+	nsplit := strings.SplitN(split[1], "/", 2)
+	var res *Resource
+	if len(nsplit) > 1 {
+		res = &Resource{
+			Kind:      split[0],
+			Namespace: nsplit[0],
+			Name:      nsplit[1],
+		}
+	} else {
+		res = &Resource{
+			Kind:      split[0],
+			Namespace: defaultNamespace,
+			Name:      nsplit[0],
+		}
+	}
+	return &ResourceSource{
+		Spec: res,
+		Path: split[2],
+	}, nil
+}
+
+func (c *Controller) ParseRule(target, source, defaultNamespace string) (*Rule, error) {
+	rule := &Rule{}
+	if targetPath := strings.TrimPrefix(target, "replace-"); targetPath != target {
+		rule.TargetPath = targetPath
+		rule.Apply = ApplyReplaceRule
+	} else {
+		return nil, errors.New("Unrecognized target prefix " + target)
+	}
+
+	src, err := ParseSource(source, defaultNamespace)
+	if err != nil {
+		return nil, err
+	}
+
+	rule.Source = src
+	return rule, nil
+}
+
+func (src *ResourceSource) Add(c *Controller, stopCh <-chan struct{}, rule *Rule, target *ResourceInstance) error {
+	// Link in the resource spec.
+	rule.Target = target.Resource
+
+	gvrs, err := c.discovery.FindResources(src.Spec.Kind)
+	if err != nil {
+		log.Error(err, "error finding resource", src.Spec.Kind)
+		return err
 	}
 
 	// We can mark the target for this source.
 	for _, gvr := range gvrs {
 		if _, ok := c.sources[*gvr]; !ok {
-			c.sources[*gvr] = make(map[string]map[Target]bool)
+			c.sources[*gvr] = make(map[string]map[Resource]*Rule)
 		}
-		key := sourceResource.Key()
+		key := src.Spec.Key()
 		if targets := c.sources[*gvr][key]; targets != nil {
-			targets[*targetObj] = true
+			targets[*rule.Target] = rule
 		} else {
-			c.sources[*gvr][key] = make(map[Target]bool)
-			c.sources[*gvr][key][*targetObj] = true
+			c.sources[*gvr][key] = make(map[Resource]*Rule)
+			c.sources[*gvr][key][*rule.Target] = rule
 		}
 
 		if _, ok := c.dynamicListers[*gvr]; !ok {
 			// Create new informers for the gvr we're watching.
 			informers := c.AddInformers(gvr, &QueuingEventHandler{
-				Queue:       c.queue,
-				GVR:         gvr,
-				Annotations: c.annotations,
+				Queue: c.queue,
+				GVR:   gvr,
 			})
 			for _, informer := range informers {
 				informer.Run(stopCh)
@@ -374,7 +442,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 		}
 	}
 
-	source, err = c.FindResourceInstance(sourceResource)
+	source, err := c.FindResourceInstance(src.Spec)
 	if err != nil {
 		return err
 	}
@@ -384,7 +452,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	}
 
 	// We already have the source, so invoke the rule.
-	return c.InvokeRule(targetObj.Rule, target, source)
+	return rule.Apply(c, rule, target)
 }
 
 func FindInListers(dls []cache.GenericLister, namespace, name string) (interface{}, error) {
@@ -401,14 +469,6 @@ func FindInListers(dls []cache.GenericLister, namespace, name string) (interface
 		}
 	}
 	return nil, nil
-}
-
-func (c *Controller) processNextSourceWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
-	// log := logf.FromContext(ctx)
-
-	// FIXME: Update the targets accordingly.
-	log.Infof("Would check %s for targets", key)
-	return nil
 }
 
 func (c *Controller) Start(stopCh <-chan struct{}) error {

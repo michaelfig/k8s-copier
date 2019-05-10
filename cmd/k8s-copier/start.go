@@ -37,14 +37,16 @@ func (o *CopierControllerOptions) Register(mgr ctrl.Manager) error {
 	return mgr.Add(c)
 }
 
-func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet) {
-	// FIXME: Add from the actual flags.
+func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet, cmd *cobra.Command) {
 	fs.StringSliceVarP(&o.Namespaces, "namespace", "n", []string{}, ""+
 		"Specify the list of namespaces to act on."+
 		" (default all namespaces)")
 	fs.StringSliceVarP(&o.Targets, "target", "t", []string{}, ""+
 		"Specify the target resource types to update (required)."+
 		" Each must be {KIND|RESOURCE}[[.VERSION].GROUP]")
+	if cmd != nil {
+		cmd.MarkFlagRequired("target")
+	}
 }
 
 func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
@@ -53,6 +55,8 @@ func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 		Use:   "k8s-copier",
 		Short: "k8s-copier is a Kubernetes dynamic resource-to-resource copier",
 
+		Args: cobra.NoArgs,
+
 		Run: func(cmd *cobra.Command, args []string) {
 			log.Infof("starting k8s-copier %s", AppVersion)
 			o.RunCopierController(stopCh)
@@ -60,8 +64,7 @@ func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	o.AddFlags(flags)
-	cmd.MarkFlagRequired("target")
+	o.AddFlags(flags, cmd)
 	return cmd
 }
 

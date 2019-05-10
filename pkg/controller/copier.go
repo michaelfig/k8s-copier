@@ -19,9 +19,7 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +30,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
@@ -60,23 +57,6 @@ type Controller struct {
 	targets map[schema.GroupVersionResource]bool
 }
 
-type Rule struct {
-	Apply      func(*Controller, *Rule, *ResourceInstance) error
-	Target     *Resource
-	TargetPath string
-	Source     Source
-}
-
-type ResourceSource struct {
-	Spec *Resource
-	Path string
-}
-
-type Source interface {
-	Data() (interface{}, error)
-	Add(*Controller, <-chan struct{}, *Rule, *ResourceInstance) error
-}
-
 type Resource struct {
 	Name      string
 	Namespace string
@@ -91,44 +71,6 @@ type ResourceInstance struct {
 
 func (r *Resource) Key() string {
 	return r.Namespace + "/" + r.Name
-}
-
-type QueuingEventHandler struct {
-	GVR   *schema.GroupVersionResource
-	Queue workqueue.RateLimitingInterface
-}
-
-func (q *QueuingEventHandler) Enqueue(obj interface{}) {
-	key, err := KeyFunc(obj)
-	if err != nil {
-		runtime.HandleError(err)
-		return
-	}
-	fullKey := q.GVR.Resource
-	if q.GVR.Group != "" {
-		fullKey += "." + q.GVR.Version + "." + q.GVR.Group
-	}
-	fullKey += ":" + key
-	q.Queue.Add(fullKey)
-}
-
-func (q *QueuingEventHandler) OnAdd(obj interface{}) {
-	q.Enqueue(obj)
-}
-
-func (q *QueuingEventHandler) OnUpdate(old, new interface{}) {
-	if reflect.DeepEqual(old, new) {
-		return
-	}
-	q.Enqueue(new)
-}
-
-func (q *QueuingEventHandler) OnDelete(obj interface{}) {
-	tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-	if ok {
-		obj = tombstone.Obj
-	}
-	q.Enqueue(obj)
 }
 
 // New returns a new controller.
@@ -281,15 +223,6 @@ func (c *Controller) FindResourceInstance(resource *Resource) (*ResourceInstance
 	return nil, nil
 }
 
-func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error {
-	data, err := rule.Source.Data()
-	if err != nil {
-		return err
-	}
-	log.Infof("FIXME: would replace %s on %s from %s", rule.TargetPath, target.Resource.Key(), data)
-	return nil
-}
-
 func (src *ResourceSource) Data() (interface{}, error) {
 	// FIXME: Return the actual data for the source path.
 	return src.Path, nil
@@ -345,7 +278,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 		if targetRule == ann {
 			continue
 		}
-		rule, err := c.ParseRule(targetRule, value, self.Namespace)
+		rule, err := ParseRule(targetRule, value, self.Namespace)
 		if err != nil {
 			log.Errorf("Error parsing %s annotation %s: %s", key, ann, err)
 			continue
@@ -361,50 +294,6 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	}
 
 	return err
-}
-
-func ParseSource(source, defaultNamespace string) (Source, error) {
-	if jsonData := strings.TrimPrefix(source, "json:"); jsonData != source {
-		return nil, errors.New("FIXME: JSON source not implemented")
-	}
-	split := strings.SplitN(source, ":", 3)
-	nsplit := strings.SplitN(split[1], "/", 2)
-	var res *Resource
-	if len(nsplit) > 1 {
-		res = &Resource{
-			Kind:      split[0],
-			Namespace: nsplit[0],
-			Name:      nsplit[1],
-		}
-	} else {
-		res = &Resource{
-			Kind:      split[0],
-			Namespace: defaultNamespace,
-			Name:      nsplit[0],
-		}
-	}
-	return &ResourceSource{
-		Spec: res,
-		Path: split[2],
-	}, nil
-}
-
-func (c *Controller) ParseRule(target, source, defaultNamespace string) (*Rule, error) {
-	rule := &Rule{}
-	if targetPath := strings.TrimPrefix(target, "replace-"); targetPath != target {
-		rule.TargetPath = targetPath
-		rule.Apply = ApplyReplaceRule
-	} else {
-		return nil, errors.New("Unrecognized target prefix " + target)
-	}
-
-	src, err := ParseSource(source, defaultNamespace)
-	if err != nil {
-		return nil, err
-	}
-
-	rule.Source = src
-	return rule, nil
 }
 
 func (src *ResourceSource) Add(c *Controller, stopCh <-chan struct{}, rule *Rule, target *ResourceInstance) error {

@@ -43,8 +43,8 @@ func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet) {
 		"Specify the list of namespaces to act on."+
 		" (default all namespaces)")
 	fs.StringSliceVarP(&o.Targets, "target", "t", []string{}, ""+
-		"Specify the target resource types to update."+
-		" Each should be {KIND|RESOURCE}[[.VERSION].GROUP]")
+		"Specify the target resource types to update (required)."+
+		" Each must be {KIND|RESOURCE}[[.VERSION].GROUP]")
 }
 
 func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
@@ -55,15 +55,13 @@ func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 
 		Run: func(cmd *cobra.Command, args []string) {
 			log.Infof("starting k8s-copier %s", AppVersion)
-			if len(o.Targets) == 0 {
-				log.Fatal("You must specify at least one TARGET")
-			}
 			o.RunCopierController(stopCh)
 		},
 	}
 
 	flags := cmd.Flags()
 	o.AddFlags(flags)
+	cmd.MarkFlagRequired("target")
 	return cmd
 }
 

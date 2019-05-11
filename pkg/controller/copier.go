@@ -29,6 +29,7 @@ import (
 	log "k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
@@ -223,11 +224,6 @@ func (c *Controller) FindResourceInstance(resource *Resource) (*ResourceInstance
 	return nil, nil
 }
 
-func (src *ResourceSource) Data() (interface{}, error) {
-	// FIXME: Return the actual data for the source path.
-	return src.Path, nil
-}
-
 func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh <-chan struct{}) error {
 	// log := logf.FromContext(ctx)
 	splits := strings.SplitN(key, ":", 2)
@@ -287,7 +283,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 			continue
 		}
 
-		err = rule.Source.Add(c, stopCh, rule, target)
+		err = rule.Source.Register(c, stopCh, rule, target)
 		if err != nil {
 			log.Errorf("Error adding %s annotation %s: %s", key, ann, err)
 		}
@@ -296,55 +292,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	return err
 }
 
-func (src *ResourceSource) Add(c *Controller, stopCh <-chan struct{}, rule *Rule, target *ResourceInstance) error {
-	// Link in the resource spec.
-	rule.Target = target.Resource
-
-	gvrs, err := c.discovery.FindResources(src.Spec.Kind)
-	if err != nil {
-		log.Error(err, "error finding resource", src.Spec.Kind)
-		return err
-	}
-
-	// We can mark the target for this source.
-	for _, gvr := range gvrs {
-		if _, ok := c.sources[*gvr]; !ok {
-			c.sources[*gvr] = make(map[string]map[Resource]*Rule)
-		}
-		key := src.Spec.Key()
-		if targets := c.sources[*gvr][key]; targets != nil {
-			targets[*rule.Target] = rule
-		} else {
-			c.sources[*gvr][key] = make(map[Resource]*Rule)
-			c.sources[*gvr][key][*rule.Target] = rule
-		}
-
-		if _, ok := c.dynamicListers[*gvr]; !ok {
-			// Create new informers for the gvr we're watching.
-			informers := c.AddInformers(gvr, &QueuingEventHandler{
-				Queue: c.queue,
-				GVR:   gvr,
-			})
-			for _, informer := range informers {
-				informer.Run(stopCh)
-			}
-		}
-	}
-
-	source, err := c.FindResourceInstance(src.Spec)
-	if err != nil {
-		return err
-	}
-
-	if source == nil {
-		return nil
-	}
-
-	// We already have the source, so invoke the rule.
-	return rule.Apply(c, rule, target)
-}
-
-func FindInListers(dls []cache.GenericLister, namespace, name string) (interface{}, error) {
+func FindInListers(dls []cache.GenericLister, namespace, name string) (runtime.Object, error) {
 	for _, dl := range dls {
 		if l := dl.ByNamespace(namespace); l != nil {
 			obj, err := l.Get(name)
@@ -352,9 +300,7 @@ func FindInListers(dls []cache.GenericLister, namespace, name string) (interface
 				log.Error(err, "error looking up object")
 				continue
 			}
-			if obj != nil {
-				return obj, nil
-			}
+			return obj, nil
 		}
 	}
 	return nil, nil

@@ -15,11 +15,13 @@ type Rule struct {
 }
 
 func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error {
-	data, err := rule.Source.Data()
+	data, err := rule.Source.GetData()
 	if err != nil {
 		return err
 	}
-	log.Infof("FIXME: would replace %s on %s from %s", rule.TargetPath, target.Resource.Key(), data)
+	if data != nil {
+		log.Infof("FIXME: would replace %s on %s with %s", rule.TargetPath, target.Resource.Key(), data)
+	}
 	return nil
 }
 

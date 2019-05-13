@@ -48,6 +48,7 @@ type Controller struct {
 
 	discovery      *discovery.Client
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
+	dynclient      dynamic.Interface
 	factories      []dynamicinformer.DynamicSharedInformerFactory
 	queue          workqueue.RateLimitingInterface
 	syncHandler    func(context.Context, string, <-chan struct{}) error
@@ -65,9 +66,9 @@ type Resource struct {
 }
 
 type ResourceInstance struct {
-	Resource *Resource
-	GVR      schema.GroupVersionResource
-	Object   interface{}
+	*Resource
+	GVR    schema.GroupVersionResource
+	Object interface{}
 }
 
 func (r *Resource) Key() string {
@@ -85,6 +86,7 @@ func New(ctx *context.Context, config *rest.Config, namespaces []string) *Contro
 	ctrl.targets = make(map[schema.GroupVersionResource]bool)
 
 	dynclient := dynamic.NewForConfigOrDie(config)
+	ctrl.dynclient = dynclient
 	if len(namespaces) == 0 {
 		// Create a single all-namespaces factory.
 		ctrl.factories = []dynamicinformer.DynamicSharedInformerFactory{

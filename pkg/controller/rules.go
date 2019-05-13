@@ -6,7 +6,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	log "k8s.io/klog"
 )
 
@@ -23,7 +22,7 @@ func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error
 		return err
 	}
 
-	log.Infof("Replacing %s:%s with %s", target.Resource.Key(), rule.TargetPath, data)
+	log.Infof("Replacing %s:%s", target.Resource.Key(), rule.TargetPath)
 	if data == nil {
 		log.Infof("Cannot replace %s:%s, no data from source",
 			rule.Target.Key(), rule.TargetPath)
@@ -32,25 +31,24 @@ func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error
 
 	res := c.dynclient.Resource(target.GVR)
 	nsres := res.Namespace(target.Namespace)
-	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(target.Object)
+	obj, err := nsres.Get(target.Name, metav1.GetOptions{})
 	if err != nil {
-		log.Infof("Cannot convert to unstructured: %s", err)
+		log.Infof("Cannot get %s: %s", target.Name, err)
 		return err
 	}
 
 	// Update the target object.
 	path := strings.Split(rule.TargetPath, ".")
-	err = unstructured.SetNestedField(obj, data, path...)
+	err = unstructured.SetNestedField(obj.Object, data, path...)
 	if err != nil {
 		log.Infof("Cannot set field %s: %s", rule.TargetPath, err)
 		return err
 	}
 
 	// Run the update.
-	unObj := &unstructured.Unstructured{Object: obj}
-	_, err = nsres.Update(unObj, metav1.UpdateOptions{}, target.Name)
+	_, err = nsres.Update(obj, metav1.UpdateOptions{})
 	if err != nil {
-		log.Infof("Cannot update %s: %s: %v", target.Name, err, unObj)
+		log.Infof("Cannot update %s: %s", target.Name, err)
 	}
 	return err
 }

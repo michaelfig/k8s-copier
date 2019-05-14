@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	AppVersion = "v0.0.1"
+	AppVersion = "v1.0.0"
 )
 
 type CopierControllerOptions struct {

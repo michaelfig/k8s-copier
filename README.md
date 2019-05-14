@@ -4,6 +4,8 @@
 
 k8s-copier watches and updates specially-annotated Kubernetes resources with values from other resources.  It can also update resources with data specified in the annotation (useful if another controller is regenerating a resource and an override needs to be applied).
 
+There is a prebuilt [Docker image](https://hub.docker.com/r/michaelfig/k8s-copier).
+
 ## Annotations
 
 Annotations on a target resource (one whose singular or plural form is passed as a `--target=`*RESOURCE* to k8s-copier, with optional appended dot-separated *VERSION* and *GROUP*) can be one of the following:

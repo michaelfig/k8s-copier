@@ -50,6 +50,7 @@ const (
 type Controller struct {
 	Context context.Context
 
+	informerMutex  sync.Mutex
 	discovery      *discovery.Client
 	dynamicListers map[schema.GroupVersionResource][]cache.GenericLister
 	dynclient      dynamic.Interface
@@ -139,6 +140,11 @@ func (c *Controller) AddTarget(target string) error {
 }
 
 func (c *Controller) AddInformers(gvr *schema.GroupVersionResource, handler cache.ResourceEventHandler) []cache.SharedInformer {
+	c.informerMutex.Lock()
+	defer c.informerMutex.Unlock()
+	if _, ok := c.dynamicListers[*gvr]; ok {
+		return []cache.SharedInformer{}
+	}
 	c.dynamicListers[*gvr] = make([]cache.GenericLister, len(c.factories))
 	informers := make([]cache.SharedInformer, len(c.factories))
 	for i, factory := range c.factories {

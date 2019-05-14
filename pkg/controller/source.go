@@ -114,18 +114,15 @@ func (src *ResourceSource) Register(c *Controller, stopCh <-chan struct{}, rule 
 				c.sources[*gvr][key] = make(map[Resource]*Rule)
 				c.sources[*gvr][key][*rule.Target] = rule
 			}
-
-			if _, ok := c.dynamicListers[*gvr]; !ok {
-				// Create new informers for the gvr we're watching.
-				informers := c.AddInformers(gvr, &QueuingEventHandler{
-					Queue: c.queue,
-					GVR:   gvr,
-				})
-				for _, informer := range informers {
-					informer.Run(stopCh)
-				}
-			}
 		}()
+		// Create new informers for the gvr we're watching.
+		informers := c.AddInformers(gvr, &QueuingEventHandler{
+			Queue: c.queue,
+			GVR:   gvr,
+		})
+		for _, informer := range informers {
+			informer.Run(stopCh)
+		}
 	}
 
 	// Try invoking the rule.

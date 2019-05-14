@@ -24,5 +24,7 @@ FROM alpine
 LABEL maintainer="Michael FIG <michael+k8s-copier@fig.org>"
 
 WORKDIR /app
-COPY --from=build-env /app/k8s-copier /app/
-CMD ./k8s-copier
+COPY --from=build-env /app/k8s-copier /bin/k8s-copier
+
+USER nobody
+ENTRYPOINT ["/bin/k8s-copier"]

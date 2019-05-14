@@ -1,6 +1,6 @@
 # K8S-Copier
 
-*NOTE: This project is under active development.  Not yet working, much less ready for production.*
+*NOTE: This project is probably not ready for production, but it does work for my purposes.*
 
 k8s-copier watches and updates specially-annotated Kubernetes resources with values from other resources.  It can also update resources with data specified in the annotation (useful if another controller is regenerating a resource and an override needs to be applied).
 

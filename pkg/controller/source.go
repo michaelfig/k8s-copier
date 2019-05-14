@@ -101,27 +101,31 @@ func (src *ResourceSource) Register(c *Controller, stopCh <-chan struct{}, rule 
 
 	// We can mark the target for this source.
 	for _, gvr := range gvrs {
-		if _, ok := c.sources[*gvr]; !ok {
-			c.sources[*gvr] = make(map[string]map[Resource]*Rule)
-		}
-		key := src.Spec.Key()
-		if targets := c.sources[*gvr][key]; targets != nil {
-			targets[*rule.Target] = rule
-		} else {
-			c.sources[*gvr][key] = make(map[Resource]*Rule)
-			c.sources[*gvr][key][*rule.Target] = rule
-		}
-
-		if _, ok := c.dynamicListers[*gvr]; !ok {
-			// Create new informers for the gvr we're watching.
-			informers := c.AddInformers(gvr, &QueuingEventHandler{
-				Queue: c.queue,
-				GVR:   gvr,
-			})
-			for _, informer := range informers {
-				informer.Run(stopCh)
+		func() {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			if _, ok := c.sources[*gvr]; !ok {
+				c.sources[*gvr] = make(map[string]map[Resource]*Rule)
 			}
-		}
+			key := src.Spec.Key()
+			if targets := c.sources[*gvr][key]; targets != nil {
+				targets[*rule.Target] = rule
+			} else {
+				c.sources[*gvr][key] = make(map[Resource]*Rule)
+				c.sources[*gvr][key][*rule.Target] = rule
+			}
+
+			if _, ok := c.dynamicListers[*gvr]; !ok {
+				// Create new informers for the gvr we're watching.
+				informers := c.AddInformers(gvr, &QueuingEventHandler{
+					Queue: c.queue,
+					GVR:   gvr,
+				})
+				for _, informer := range informers {
+					informer.Run(stopCh)
+				}
+			}
+		}()
 	}
 
 	// Try invoking the rule.

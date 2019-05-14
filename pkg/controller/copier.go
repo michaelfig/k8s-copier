@@ -43,6 +43,10 @@ var (
 	KeyFunc = cache.DeletionHandlingMetaNamespaceKeyFunc
 )
 
+const (
+	AnnotationPrefix = "k8s-copier.fig.org/"
+)
+
 type Controller struct {
 	Context context.Context
 
@@ -55,6 +59,7 @@ type Controller struct {
 	workerWg       sync.WaitGroup
 	syncedFuncs    []cache.InformerSynced
 
+	mutex   sync.Mutex
 	sources map[schema.GroupVersionResource]map[string]map[Resource]*Rule
 	targets map[schema.GroupVersionResource]bool
 }
@@ -116,15 +121,19 @@ func (c *Controller) AddTarget(target string) error {
 	}
 
 	for _, gvr := range gvrs {
-		handler := &QueuingEventHandler{
-			Queue: c.queue,
-			GVR:   gvr,
-		}
-		c.targets[*gvr] = true
-		informers := c.AddInformers(gvr, handler)
-		for _, informer := range informers {
-			c.syncedFuncs = append(c.syncedFuncs, informer.HasSynced)
-		}
+		func() {
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			handler := &QueuingEventHandler{
+				Queue: c.queue,
+				GVR:   gvr,
+			}
+			c.targets[*gvr] = true
+			informers := c.AddInformers(gvr, handler)
+			for _, informer := range informers {
+				c.syncedFuncs = append(c.syncedFuncs, informer.HasSynced)
+			}
+		}()
 	}
 	return nil
 }
@@ -184,7 +193,7 @@ func (c *Controller) worker(ctx context.Context, stopCh <-chan struct{}) {
 		log.V(logf.DebugLevel).Infof("got obj %v", obj)
 		var key string
 		// use an inlined function so we can use defer
-		func() {
+		func(obj interface{}) {
 			defer c.queue.Done(obj)
 			var ok bool
 			if key, ok = obj.(string); !ok {
@@ -197,9 +206,9 @@ func (c *Controller) worker(ctx context.Context, stopCh <-chan struct{}) {
 				c.queue.AddRateLimited(obj)
 				return
 			}
-			log.Info("finished processing work item")
+			log.Info("finished processing work item ", obj)
 			c.queue.Forget(obj)
-		}()
+		}(obj)
 	}
 	log.V(logf.DebugLevel).Info("exiting worker loop")
 }
@@ -272,7 +281,7 @@ func (c *Controller) processNextWorkItem(ctx context.Context, key string, stopCh
 	}
 
 	for ann, value := range myMeta.GetAnnotations() {
-		targetRule := strings.TrimPrefix(ann, "k8s-copier.fig.org/")
+		targetRule := strings.TrimPrefix(ann, AnnotationPrefix)
 		if targetRule == ann {
 			continue
 		}

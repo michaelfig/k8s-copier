@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/k8s-copier/main.go",
-            "args": ["--target=federatedsecret", "--namespace=cloud"],
+            "args": ["--target=federatedsecret,federatedhelmrelease", "--namespace=cloud", "--v=2"],
         },
     ]
 }

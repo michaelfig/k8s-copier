@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +40,15 @@ func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error
 
 	// Update the target object.
 	path := strings.Split(rule.TargetPath, ".")
+	current, found, err := unstructured.NestedFieldNoCopy(obj.Object, path...)
+	if err != nil {
+		log.Infof("Cannot get field %s: %s", rule.TargetPath, err)
+		return err
+	}
+	if found && reflect.DeepEqual(current, data) {
+		log.Infof("Already equal")
+		return nil
+	}
 	err = unstructured.SetNestedField(obj.Object, data, path...)
 	if err != nil {
 		log.Infof("Cannot set field %s: %s", rule.TargetPath, err)

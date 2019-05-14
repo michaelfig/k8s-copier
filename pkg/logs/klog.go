@@ -32,5 +32,5 @@ func InitLogs(fs *flag.FlagSet) {
 	klog.InitFlags(fs)
 	fs.Set("logtostderr", "true")
 
-	log.SetOutput(os.Stdout)
+	log.SetOutput(os.Stderr)
 }

@@ -1,3 +1,5 @@
+Dockerfile
 .git
 vendor/
 cmd/k8s-copier/debug
+k8s-*.yaml

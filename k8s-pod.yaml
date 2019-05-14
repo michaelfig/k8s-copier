@@ -15,6 +15,7 @@ spec:
   - name: copier
     image: michaelfig/k8s-copier
     args:
+    - ./k8s-copier
     - --namespace=$(POD_NAMESPACE)
     - --target=federatedsecret,federatedhelmrelease
     env:

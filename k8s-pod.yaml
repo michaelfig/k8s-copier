@@ -16,7 +16,7 @@ spec:
     image: michaelfig/k8s-copier
     args:
     - --namespace=$(POD_NAMESPACE)
-    - --target=types.federation.k8s.io/v1alpha1/federatedsecrets
+    - --target=federatedsecret,federatedhelmrelease
     env:
     - name: POD_NAMESPACE
       valueFrom:

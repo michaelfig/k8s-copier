@@ -26,7 +26,7 @@ import (
 
 	"github.com/michaelfig/k8s-copier/pkg/discovery"
 	logf "github.com/michaelfig/k8s-copier/pkg/logs"
-	log "k8s.io/klog"
+	log "k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -82,8 +82,8 @@ func (r *Resource) Key() string {
 }
 
 // New returns a new controller.
-func New(ctx *context.Context, config *rest.Config, namespaces []string) *Controller {
-	ctrl := &Controller{Context: *ctx}
+func New(ctx context.Context, config *rest.Config, namespaces []string) *Controller {
+	ctrl := &Controller{Context: ctx}
 	ctrl.dynamicListers = make(map[schema.GroupVersionResource][]cache.GenericLister)
 	ctrl.queue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "copier")
 	ctrl.syncHandler = ctrl.processNextWorkItem
@@ -323,8 +323,8 @@ func FindInListers(dls []cache.GenericLister, namespace, name string) (runtime.O
 	return nil, nil
 }
 
-func (c *Controller) Start(stopCh <-chan struct{}) error {
+func (c *Controller) Start(ctx context.Context) error {
 	// TODO: Make configurable.
 	numWorkers := 3
-	return c.Run(numWorkers, stopCh)
+	return c.Run(numWorkers, ctx.Done())
 }

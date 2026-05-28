@@ -7,7 +7,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	log "k8s.io/klog"
+	log "k8s.io/klog/v2"
 )
 
 type Rule struct {
@@ -32,7 +32,7 @@ func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error
 
 	res := c.dynclient.Resource(target.GVR)
 	nsres := res.Namespace(target.Namespace)
-	obj, err := nsres.Get(target.Name, metav1.GetOptions{})
+	obj, err := nsres.Get(c.Context, target.Name, metav1.GetOptions{})
 	if err != nil {
 		log.Infof("Cannot get %s: %s", target.Name, err)
 		return err
@@ -56,7 +56,7 @@ func ApplyReplaceRule(c *Controller, rule *Rule, target *ResourceInstance) error
 	}
 
 	// Run the update.
-	_, err = nsres.Update(obj, metav1.UpdateOptions{})
+	_, err = nsres.Update(c.Context, obj, metav1.UpdateOptions{})
 	if err != nil {
 		log.Infof("Cannot update %s: %s", target.Name, err)
 	}

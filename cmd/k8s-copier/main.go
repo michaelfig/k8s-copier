@@ -20,8 +20,8 @@ import (
 	"flag"
 
 	logf "github.com/michaelfig/k8s-copier/pkg/logs"
-	log "k8s.io/klog"
-	logr "k8s.io/klog/klogr"
+	log "k8s.io/klog/v2"
+	logr "k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -31,8 +31,8 @@ func main() {
 	logger := logr.New().WithName("k8s-copier")
 	ctrl.SetLogger(logger)
 
-	stopCh := ctrl.SetupSignalHandler()
-	cmd := NewCommandCopierController(stopCh)
+	ctx := ctrl.SetupSignalHandler()
+	cmd := NewCommandCopierController(ctx)
 	cmd.Flags().AddGoFlagSet(flag.CommandLine)
 
 	flag.CommandLine.Parse([]string{})

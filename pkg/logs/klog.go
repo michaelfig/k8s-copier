@@ -21,7 +21,7 @@ import (
 	"log"
 	"os"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // InitLogs initializes logs the way we want for kubernetes.

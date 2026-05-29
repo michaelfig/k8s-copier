@@ -28,7 +28,7 @@ func (q *QueuingEventHandler) Enqueue(obj interface{}) {
 	q.Queue.Add(fullKey)
 }
 
-func (q *QueuingEventHandler) OnAdd(obj interface{}) {
+func (q *QueuingEventHandler) OnAdd(obj interface{}, isInInitialList bool) {
 	q.Enqueue(obj)
 }
 

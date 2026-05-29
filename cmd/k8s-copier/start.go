@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	log "k8s.io/klog"
+	log "k8s.io/klog/v2"
 
 	copier "github.com/michaelfig/k8s-copier/pkg/controller"
 	"github.com/spf13/cobra"
@@ -26,7 +26,7 @@ func NewCopierControllerOptions() *CopierControllerOptions {
 
 func (o *CopierControllerOptions) Register(mgr ctrl.Manager) error {
 	ctx := context.TODO()
-	c := copier.New(&ctx, mgr.GetConfig(), o.Namespaces)
+	c := copier.New(ctx, mgr.GetConfig(), o.Namespaces)
 
 	// Subscribe to the target resources.
 	for _, target := range o.Targets {
@@ -50,7 +50,7 @@ func (o *CopierControllerOptions) AddFlags(fs *pflag.FlagSet, cmd *cobra.Command
 	}
 }
 
-func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
+func NewCommandCopierController(ctx context.Context) *cobra.Command {
 	o := NewCopierControllerOptions()
 	cmd := &cobra.Command{
 		Use:   "k8s-copier",
@@ -60,7 +60,7 @@ func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 
 		Run: func(cmd *cobra.Command, args []string) {
 			log.Infof("starting k8s-copier %s", AppVersion)
-			o.RunCopierController(stopCh)
+			o.RunCopierController(ctx)
 		},
 	}
 
@@ -69,7 +69,7 @@ func NewCommandCopierController(stopCh <-chan struct{}) *cobra.Command {
 	return cmd
 }
 
-func (o *CopierControllerOptions) RunCopierController(stopCh <-chan struct{}) {
+func (o *CopierControllerOptions) RunCopierController(ctx context.Context) {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
 
 	if err != nil {
@@ -80,7 +80,7 @@ func (o *CopierControllerOptions) RunCopierController(stopCh <-chan struct{}) {
 		log.Fatalf("error registering controller: %v", err)
 	}
 
-	if err := mgr.Start(stopCh); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		log.Fatalf("error running manager: %v", err)
 	}
 }
